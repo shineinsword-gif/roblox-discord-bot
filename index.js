@@ -17,6 +17,68 @@ let stock = {
 };
 
 const activeTickets = new Map();
+const ticketLogs = []; // Store all ticket transcripts
+
+// ========== TICKET LOGGING FUNCTIONS ==========
+function saveTicketLog(ticketData) {
+  const logFile = './ticket_logs.json';
+  let existingLogs = [];
+  
+  try {
+    if (fs.existsSync(logFile)) {
+      existingLogs = JSON.parse(fs.readFileSync(logFile, 'utf8'));
+    }
+  } catch (err) {
+    console.error('Error reading log file:', err);
+  }
+  
+  existingLogs.push({
+    ...ticketData,
+    timestamp: new Date().toISOString(),
+    logId: `log_${Date.now()}_${Math.random().toString(36).substring(7)}`
+  });
+  
+  fs.writeFileSync(logFile, JSON.stringify(existingLogs, null, 2));
+  console.log(`📝 Ticket log saved: ${ticketData.ticketId}`);
+}
+
+async function logChannelMessages(channel, ticketInfo) {
+  try {
+    const messages = await channel.messages.fetch({ limit: 100 });
+    const messageLog = [];
+    
+    messages.reverse().forEach(msg => {
+      messageLog.push({
+        author: msg.author.tag,
+        content: msg.content,
+        timestamp: msg.createdAt.toISOString(),
+        attachments: msg.attachments.size > 0 ? 'Has attachments' : 'None'
+      });
+    });
+    
+    const logData = {
+      ticketId: channel.id,
+      ticketName: channel.name,
+      userId: ticketInfo.userId,
+      username: ticketInfo.username || 'Unknown',
+      item: ticketInfo.item,
+      status: ticketInfo.status,
+      robloxUserId: ticketInfo.robloxUserId || 'Not provided',
+      robloxUsername: ticketInfo.robloxUsername || 'Not provided',
+      tradeId: ticketInfo.tradeId || 'Not sent',
+      createdAt: channel.createdAt.toISOString(),
+      closedAt: new Date().toISOString(),
+      messages: messageLog,
+      messageCount: messageLog.length
+    };
+    
+    saveTicketLog(logData);
+    return logData;
+  } catch (err) {
+    console.error('Error logging channel messages:', err);
+    return null;
+  }
+}
 
 async function fetchRobloxItemImage(itemId) {
   try {
@@ -71,7 +133,8 @@ client.once('ready', async () => {
       { name: 'removestock', description: '[STAFF] Remove an item from stock', options: [
         { name: 'itemid', type: 4, description: 'Item ID to remove', required: true }
       ]},
-      { name: 'refreshimages', description: '[STAFF] Refresh all item images' }
+      { name: 'refreshimages', description: '[STAFF] Refresh all item images' },
+      { name: 'viewlogs', description: '[STAFF] View recent ticket logs' }
     ]);
     console.log('✅ Commands registered!');
   }
@@ -102,12 +165,40 @@ setInterval(() => console.log(`💓 Bot alive at ${new Date().toLocaleTimeString
 const express = require('express');
 const app = express();
 app.get('/', (req, res) => res.send('🤖 Bot Running!'));
+app.get('/logs', (req, res) => {
+  try {
+    if (fs.existsSync('./ticket_logs.json')) {
+      const logs = JSON.parse(fs.readFileSync('./ticket_logs.json', 'utf8'));
+      res.json(logs.slice(-50)); // Return last 50 logs
+    } else {
+      res.json([]);
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Could not read logs' });
+  }
+});
 app.listen(process.env.PORT || 3000, () => console.log(`🌐 Web server on port ${process.env.PORT || 3000}`));
 
 function createMainStockEmbed() {
   const embed = new EmbedBuilder().setTitle('📦 Current Stock').setDescription('Use the buttons below to browse or search').setColor(0x0099FF);
   stock.items.forEach(item => embed.addFields({ name: `${item.name}`, value: `💰 $${item.price} | 🆔 ID: ${item.id}`, inline: true }));
   return embed;
+}
+
+// Function to close a ticket with logging
+async function closeTicket(channel, reason, ticketInfo) {
+  if (!channel || !channel.deletable) return;
+  
+  // Log all messages before closing
+  if (ticketInfo) {
+    ticketInfo.status = reason === 'cancelled' ? 'cancelled' : 'completed';
+    ticketInfo.closedReason = reason;
+    await logChannelMessages(channel, ticketInfo);
+  }
+  
+  await channel.send(`📝 **Ticket closing...** Reason: ${reason}\nThis channel will close in 3 seconds.`);
+  setTimeout(() => channel.delete().catch(() => {}), 3000);
+  activeTickets.delete(channel.id);
 }
 
 client.on('interactionCreate', async (interaction) => {
@@ -141,6 +232,34 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply('🖼️ Refreshing images...');
       await updateAllItemImages();
       await interaction.followUp('✅ Images refreshed!');
+    }
+    else if (interaction.commandName === 'viewlogs' && interaction.member?.roles.cache.has(ROLE_STAFF_ID)) {
+      try {
+        if (fs.existsSync('./ticket_logs.json')) {
+          const logs = JSON.parse(fs.readFileSync('./ticket_logs.json', 'utf8'));
+          const recentLogs = logs.slice(-10).reverse();
+          if (recentLogs.length === 0) {
+            await interaction.reply('📝 No ticket logs found yet.');
+            return;
+          }
+          const logEmbed = new EmbedBuilder()
+            .setTitle('📝 Recent Ticket Logs')
+            .setDescription(`Last ${recentLogs.length} tickets`)
+            .setColor(0x0099FF);
+          recentLogs.forEach(log => {
+            logEmbed.addFields({
+              name: `${log.ticketName} (${log.status})`,
+              value: `User: <@${log.userId}>\nItem: ${log.item.name}\nMessages: ${log.messageCount}\nClosed: ${new Date(log.closedAt).toLocaleString()}`,
+              inline: false
+            });
+          });
+          await interaction.reply({ embeds: [logEmbed], ephemeral: true });
+        } else {
+          await interaction.reply('📝 No ticket logs found yet.');
+        }
+      } catch (err) {
+        await interaction.reply('❌ Error reading logs.');
+      }
     }
   }
   
@@ -202,7 +321,12 @@ client.on('interactionCreate', async (interaction) => {
           { id: ROLE_STAFF_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
         ]
       });
-      activeTickets.set(channel.id, { userId: interaction.user.id, item: item, status: 'awaiting_username' });
+      activeTickets.set(channel.id, { 
+        userId: interaction.user.id, 
+        username: interaction.user.username,
+        item: item, 
+        status: 'awaiting_username' 
+      });
       const embed = new EmbedBuilder().setTitle(`🛒 Purchase: ${item.name}`).setDescription(`Price: **$${item.price}**\n\nType your Roblox username below to continue.`).setThumbnail(item.imageUrl).setColor(0x00FF00);
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`request_username_${item.id}`).setLabel('💰 Continue to Purchase').setStyle(ButtonStyle.Success),
@@ -211,11 +335,20 @@ client.on('interactionCreate', async (interaction) => {
       await channel.send({ content: `<@${interaction.user.id}>`, embeds: [embed], components: [row] });
     }
     
+    // ========== FIXED: CANCEL BUTTON NOW CLOSES TICKET PROPERLY ==========
     else if (customId.startsWith('cancel_ticket_')) {
       const channelId = customId.split('_')[2];
       const channel = interaction.guild.channels.cache.get(channelId);
+      const ticketInfo = activeTickets.get(channelId);
+      
       await interaction.reply({ content: '❌ Cancelling ticket...', ephemeral: true });
-      if (channel) { await channel.send('❌ **Ticket cancelled.** Closing...'); setTimeout(() => channel.delete().catch(() => {}), 3000); activeTickets.delete(channelId); }
+      
+      if (channel && ticketInfo) {
+        await closeTicket(channel, 'cancelled_by_user', ticketInfo);
+      } else if (channel) {
+        await channel.send('❌ **Ticket cancelled.** Closing...');
+        setTimeout(() => channel.delete().catch(() => {}), 3000);
+      }
     }
     
     else if (customId.startsWith('request_username_')) {
@@ -226,7 +359,6 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.channel.send(`📝 **Please type your EXACT Roblox username:**\n\nExample: \`Builderman\``);
     }
     
-    // ========== FIXED: TRADE ACCEPTED BUTTON ==========
     else if (customId === 'trade_accepted') {
       const ticketInfo = activeTickets.get(interaction.channel.id);
       if (ticketInfo && ticketInfo.status === 'trade_sent') {
@@ -238,7 +370,9 @@ client.on('interactionCreate', async (interaction) => {
           .setThumbnail(ticketInfo.item.imageUrl)
           .setColor(0x00FF00);
         await interaction.channel.send({ embeds: [completeEmbed] });
-        setTimeout(() => { interaction.channel.delete().catch(() => {}); activeTickets.delete(interaction.channel.id); }, 5000);
+        
+        // Log and close the ticket
+        await closeTicket(interaction.channel, 'completed_successfully', ticketInfo);
       }
     }
   }
@@ -259,7 +393,11 @@ client.on('messageCreate', async (message) => {
     await message.channel.send(`❌ **Roblox user "${username}" not found**\n\n📝 Please check spelling and try again:`);
     return;
   }
-  if (ticketInfo) { ticketInfo.robloxUserId = robloxUser.id; ticketInfo.robloxUsername = robloxUser.name; ticketInfo.status = 'awaiting_confirmation'; }
+  if (ticketInfo) { 
+    ticketInfo.robloxUserId = robloxUser.id; 
+    ticketInfo.robloxUsername = robloxUser.name; 
+    ticketInfo.status = 'awaiting_confirmation'; 
+  }
   activeUsernameRequests.delete(message.author.id);
   const confirmEmbed = new EmbedBuilder()
     .setTitle('✅ Is this your Roblox profile?')
@@ -278,7 +416,6 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
   const customId = interaction.customId;
   
-  // ========== FIXED: CONFIRM TRADE WITH WARNING MESSAGE ==========
   if (customId.startsWith('confirm_trade_')) {
     const parts = customId.split('_');
     const itemId = parseInt(parts[2]);
@@ -291,7 +428,6 @@ client.on('interactionCreate', async (interaction) => {
     const tradeId = `trade_${Date.now()}_${robloxUserId}`;
     if (ticketInfo) { ticketInfo.status = 'trade_sent'; ticketInfo.tradeId = tradeId; }
     
-    // Send trade confirmation embed
     const tradeEmbed = new EmbedBuilder()
       .setTitle('📦 Trade Offer Sent!')
       .setDescription(`**${item.name}** has been offered to you.`)
@@ -305,7 +441,6 @@ client.on('interactionCreate', async (interaction) => {
     
     await interaction.channel.send({ embeds: [tradeEmbed] });
     
-    // ========== CRITICAL: WARNING EMBED WITH BUTTON ==========
     const warningEmbed = new EmbedBuilder()
       .setTitle('⚠️⚠️⚠️ ACTION REQUIRED ⚠️⚠️⚠️')
       .setDescription(`
@@ -351,17 +486,19 @@ client.on('interactionCreate', async (interaction) => {
           .setCustomId(`report_issue_${tradeId}`)
           .setLabel('⚠️ REPORT ISSUE (Did not receive trade)')
           .setStyle(ButtonStyle.Danger)
-          .setEmoji('⚠️')
+          .setEmoji('⚠️'),
+        new ButtonBuilder()
+          .setCustomId(`cancel_ticket_${interaction.channel.id}`)
+          .setLabel('❌ Cancel Order')
+          .setStyle(ButtonStyle.Danger)
       );
     
-    // Send the warning message with the button
     await interaction.channel.send({
       content: `<@${interaction.user.id}>`,
       embeds: [warningEmbed],
       components: [confirmRow]
     });
     
-    // Send a reminder after 2 minutes
     setTimeout(async () => {
       const freshTicket = activeTickets.get(interaction.channel.id);
       if (freshTicket && freshTicket.status === 'trade_sent') {
@@ -377,10 +514,9 @@ client.on('interactionCreate', async (interaction) => {
 **Still having issues?** Click the **"REPORT ISSUE"** button for assistance.
           `)
           .setColor(0xFF6600);
-        
         await interaction.channel.send({ content: `<@${interaction.user.id}>`, embeds: [reminderEmbed] });
       }
-    }, 120000); // 2 minutes
+    }, 120000);
   }
   
   else if (customId.startsWith('retry_username_')) {
@@ -407,10 +543,20 @@ client.on('interactionCreate', async (interaction) => {
   else if (customId.startsWith('cancel_ticket_')) {
     const channelId = customId.split('_')[2];
     const channel = interaction.guild.channels.cache.get(channelId);
+    const ticketInfo = activeTickets.get(channelId);
+    
     await interaction.reply({ content: '❌ Cancelling...', ephemeral: true });
-    if (channel) { await channel.send('❌ **Purchase cancelled.** Closing...'); setTimeout(() => channel.delete().catch(() => {}), 3000); activeTickets.delete(channelId); }
+    
+    if (channel && ticketInfo) {
+      await closeTicket(channel, 'cancelled_by_user', ticketInfo);
+    } else if (channel) {
+      await channel.send('❌ **Purchase cancelled.** Closing...');
+      setTimeout(() => channel.delete().catch(() => {}), 3000);
+    }
   }
 });
 
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with FIXED TRADE CONFIRMATION WARNING!');
+console.log('🚀 Bot starting with CANCEL FIX and TICKET LOGS!');
+console.log('📝 Ticket logs will be saved to ticket_logs.json');
+console.log('👀 Staff can use /viewlogs to see recent tickets');
