@@ -14,28 +14,88 @@ let stock = {
       id: 1, 
       name: "Rainbow Phoenix", 
       price: 25, 
-      robloxItemId: 101,
-      imageUrl: "https://tr.rbxcdn.com/30DAY-AvatarHeadshot-101.png"
+      robloxItemId: 101
     },
     { 
       id: 2, 
       name: "Golden Dragon", 
       price: 50, 
-      robloxItemId: 102,
-      imageUrl: "https://tr.rbxcdn.com/30DAY-AvatarHeadshot-102.png"
+      robloxItemId: 102
     },
     { 
       id: 3, 
       name: "Gold Clockwork Shades", 
       price: 75, 
-      robloxItemId: 110673146052704,
-      imageUrl: "https://tr.rbxcdn.com/30DAY-AvatarHeadshot-110673146052704.png"
+      robloxItemId: 110673146052704
     }
   ]
 };
 
+// Function to fetch item image from Roblox
+async function fetchRobloxItemImage(itemId) {
+  try {
+    // Roblox Thumbnail API for items/assets
+    const url = `https://thumbnails.roblox.com/v1/assets?assetIds=${itemId}&size=150x150&format=Png&isCircular=false`;
+    const response = await axios.get(url, {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    
+    if (response.data?.data?.[0]?.imageUrl) {
+      return response.data.data[0].imageUrl;
+    }
+    return null;
+  } catch (err) {
+    console.log(`Could not fetch image for ${itemId}: ${err.message}`);
+    return null;
+  }
+}
+
+// Function to fetch user avatar from Roblox
+async function fetchRobloxUserAvatar(userId) {
+  try {
+    const url = `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=420x420&format=Png&isCircular=false`;
+    const response = await axios.get(url, {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    
+    if (response.data?.data?.[0]?.imageUrl) {
+      return response.data.data[0].imageUrl;
+    }
+    return `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`;
+  } catch (err) {
+    return `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`;
+  }
+}
+
+// Update all items with images on startup
+async function updateAllItemImages() {
+  console.log('🖼️ Fetching images for all stock items...');
+  for (let item of stock.items) {
+    const imageUrl = await fetchRobloxItemImage(item.robloxItemId);
+    if (imageUrl) {
+      item.imageUrl = imageUrl;
+      console.log(`✅ Got image for ${item.name}`);
+    }
+  }
+  saveStock();
+}
+
 function saveStock() {
   fs.writeFileSync('./stock.json', JSON.stringify(stock, null, 2));
+}
+
+function loadStock() {
+  try {
+    if (fs.existsSync('./stock.json')) {
+      const data = fs.readFileSync('./stock.json', 'utf8');
+      stock = JSON.parse(data);
+      console.log('✅ Stock loaded from file');
+    }
+  } catch (err) {
+    console.error('Failed to load stock:', err);
+  }
 }
 
 const client = new Client({
@@ -50,6 +110,9 @@ const client = new Client({
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   
+  loadStock();
+  await updateAllItemImages();
+  
   const guild = client.guilds.cache.get(GUILD_ID);
   if (guild) {
     await guild.commands.set([
@@ -63,8 +126,7 @@ client.once('ready', async () => {
         options: [
           { name: 'name', type: 3, description: 'Item name', required: true },
           { name: 'price', type: 10, description: 'Price in USD', required: true },
-          { name: 'robloxitemid', type: 4, description: 'Roblox Item ID', required: true },
-          { name: 'imageurl', type: 3, description: 'Image URL (optional)', required: false }
+          { name: 'robloxitemid', type: 4, description: 'Roblox Item ID', required: true }
         ]
       },
       { 
@@ -73,6 +135,10 @@ client.once('ready', async () => {
         options: [
           { name: 'itemid', type: 4, description: 'Item ID to remove', required: true }
         ]
+      },
+      { 
+        name: 'refreshimages', 
+        description: '[STAFF] Refresh all item images from Roblox' 
       }
     ]);
     console.log('✅ Commands registered!');
@@ -101,11 +167,15 @@ async function findRobloxUserDirect(username) {
       const user = exactMatch || response.data.data[0];
       console.log(`✅ Found: ${user.name} (${user.id})`);
       
+      // Fetch avatar
+      const avatarUrl = await fetchRobloxUserAvatar(user.id);
+      
       return {
         id: user.id,
         name: user.name,
         displayName: user.displayName || user.name,
-        profileUrl: `https://www.roblox.com/users/${user.id}/profile`
+        profileUrl: `https://www.roblox.com/users/${user.id}/profile`,
+        avatarUrl: avatarUrl
       };
     }
     
@@ -119,11 +189,13 @@ async function findRobloxUserDirect(username) {
       const altResponse = await axios.get(altUrl, { timeout: 10000 });
       
       if (altResponse.data && altResponse.data.Id) {
+        const avatarUrl = await fetchRobloxUserAvatar(altResponse.data.Id);
         return {
           id: altResponse.data.Id,
           name: altResponse.data.Username,
           displayName: altResponse.data.Username,
-          profileUrl: `https://www.roblox.com/users/${altResponse.data.Id}/profile`
+          profileUrl: `https://www.roblox.com/users/${altResponse.data.Id}/profile`,
+          avatarUrl: avatarUrl
         };
       }
     } catch (altError) {}
@@ -144,14 +216,41 @@ function searchStock(query) {
 
 // Store active requests
 const activeUsernameRequests = new Map();
-let activeTicketChannels = new Map();
 
-// Initialize express server for Render
+// ========== SILENT KEEP-ALIVE PING ==========
+// Pings the server every 4 minutes to keep it awake (nobody sees this)
+setInterval(async () => {
+  try {
+    // This is an internal ping - no external requests needed
+    console.log(`💓 Keep-alive ping at ${new Date().toLocaleTimeString()}`);
+    // Touch the stock file to keep activity
+    if (fs.existsSync('./stock.json')) {
+      const stats = fs.statSync('./stock.json');
+      // Just reading file keeps the bot "active"
+    }
+  } catch (err) {
+    // Silent fail
+  }
+}, 240000); // Every 4 minutes
+
+// Initialize express server for Render with auto-ping
 const express = require('express');
 const app = express();
-app.get('/', (req, res) => res.send('🤖 Discord Bot is Running!'));
+app.get('/', (req, res) => res.send('🤖 Discord Bot is Running! 🚀'));
+app.get('/ping', (req, res) => {
+  console.log('🏓 External ping received');
+  res.send('pong');
+});
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`🌐 Web server on port ${port}`));
+const server = app.listen(port, () => console.log(`🌐 Web server on port ${port}`));
+
+// Also ping ourselves internally every 4 minutes
+setInterval(() => {
+  try {
+    const http = require('http');
+    http.get(`http://localhost:${port}/ping`, () => {});
+  } catch (err) {}
+}, 240000);
 
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isCommand()) {
@@ -163,17 +262,18 @@ client.on('interactionCreate', async (interaction) => {
         .setDescription('Click a button below to browse or search')
         .setColor(0x0099FF);
       
-      // Add items with images
       stock.items.forEach(item => {
         embed.addFields({
           name: `${item.name}`,
           value: `💰 $${item.price} | 🆔 ID: ${item.id}`,
           inline: true
         });
-        if (item.imageUrl && !embed.data.thumbnail) {
-          embed.setThumbnail(item.imageUrl);
-        }
       });
+      
+      // Set first item's image as thumbnail
+      if (stock.items[0]?.imageUrl) {
+        embed.setThumbnail(stock.items[0].imageUrl);
+      }
       
       const row = new ActionRowBuilder()
         .addComponents(
@@ -194,7 +294,9 @@ client.on('interactionCreate', async (interaction) => {
       const name = options.getString('name');
       const price = options.getNumber('price');
       const robloxItemId = options.getInteger('robloxitemid');
-      const imageUrl = options.getString('imageurl') || `https://tr.rbxcdn.com/30DAY-AvatarHeadshot-${robloxItemId}.png`;
+      
+      // Fetch image from Roblox
+      const imageUrl = await fetchRobloxItemImage(robloxItemId);
       
       stock.items.push({
         id: stock.items.length + 1,
@@ -229,6 +331,12 @@ client.on('interactionCreate', async (interaction) => {
       saveStock();
       await interaction.reply(`✅ Removed **${removed.name}** from stock.`);
     }
+    
+    else if (commandName === 'refreshimages' && member?.roles.cache.has(ROLE_STAFF_ID)) {
+      await interaction.reply('🖼️ Refreshing all item images from Roblox...');
+      await updateAllItemImages();
+      await interaction.followUp('✅ All images have been refreshed!');
+    }
   }
   
   // Handle MODAL submit (popup search)
@@ -255,7 +363,7 @@ client.on('interactionCreate', async (interaction) => {
       results.forEach(item => {
         resultEmbed.addFields({
           name: `${item.name}`,
-          value: `💰 $$${item.price} | 🆔 Stock ID: ${item.id}`,
+          value: `💰 $${item.price} | 🆔 Stock ID: ${item.id}`,
           inline: false
         });
         
@@ -348,12 +456,9 @@ client.on('interactionCreate', async (interaction) => {
         ]
       });
       
-      // Store ticket channel for cleanup
-      activeTicketChannels.set(channel.id, { userId: interaction.user.id, itemId: item.id });
-      
       const embed = new EmbedBuilder()
         .setTitle(`🛒 Purchase: ${item.name}`)
-        .setDescription(`Price: **$${item.price}**`)
+        .setDescription(`Price: **$${item.price}**\n\nType your Roblox username below to continue.`)
         .setThumbnail(item.imageUrl || null)
         .setColor(0x00FF00);
       
@@ -380,7 +485,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply({ content: '❌ Cancelling ticket...', ephemeral: true });
       
       if (channel) {
-        await channel.send('❌ **Ticket cancelled by user.** This channel will close in 3 seconds...');
+        await channel.send('❌ **Ticket cancelled.** This channel will close in 3 seconds...');
         setTimeout(() => channel.delete().catch(() => {}), 3000);
       }
     }
@@ -432,7 +537,8 @@ client.on('messageCreate', async (message) => {
     .setTitle('✅ Is this your Roblox profile?')
     .setDescription(`**Username:** ${robloxUser.name}\n**Display Name:** ${robloxUser.displayName}\n**User ID:** ${robloxUser.id}`)
     .addFields({ name: '🔗 Profile Link', value: robloxUser.profileUrl, inline: false })
-    .setThumbnail(`https://www.roblox.com/headshot-thumbnail/image?userId=${robloxUser.id}&width=420&height=420&format=png`)
+    .setThumbnail(robloxUser.avatarUrl)
+    .setImage(robloxUser.avatarUrl)
     .setColor(0x00FF00);
   
   const row = new ActionRowBuilder()
@@ -441,6 +547,10 @@ client.on('messageCreate', async (message) => {
         .setCustomId(`confirm_trade_${item.id}_${robloxUser.id}`)
         .setLabel('✅ Yes, That\'s Me')
         .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`retry_username_${item.id}`)
+        .setLabel('🔄 Retry - Wrong User')
+        .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`cancel_ticket_${message.channel.id}`)
         .setLabel('❌ Cancel')
@@ -466,9 +576,37 @@ client.on('interactionCreate', async (interaction) => {
     
     const tradeId = `trade_${Date.now()}_${robloxUserId}`;
     
-    await interaction.channel.send(`✅ **Purchase Complete!**\n\n📦 Item: ${item.name}\n👤 Roblox User: <@${interaction.user.id}>\n🆔 Transaction ID: \`${tradeId}\`\n\nThis ticket will close in 10 seconds.`);
+    const completeEmbed = new EmbedBuilder()
+      .setTitle('✅ Purchase Complete!')
+      .setDescription(`**${item.name}** has been processed`)
+      .setThumbnail(item.imageUrl)
+      .addFields(
+        { name: 'Item', value: item.name, inline: true },
+        { name: 'Price', value: `$${item.price}`, inline: true },
+        { name: 'Roblox User', value: `<@${interaction.user.id}>`, inline: true },
+        { name: 'Transaction ID', value: `\`${tradeId}\``, inline: false }
+      )
+      .setColor(0x00FF00);
+    
+    await interaction.channel.send({ embeds: [completeEmbed] });
     
     setTimeout(() => interaction.channel.delete().catch(() => {}), 10000);
+  }
+  
+  // RETRY BUTTON - Try a different username
+  else if (customId.startsWith('retry_username_')) {
+    const parts = customId.split('_');
+    const itemId = parseInt(parts[3]);
+    const item = stock.items.find(i => i.id === itemId);
+    
+    await interaction.reply({ content: '🔄 Please type a different Roblox username.', ephemeral: true });
+    
+    activeUsernameRequests.set(interaction.user.id, {
+      channelId: interaction.channel.id,
+      item: item
+    });
+    
+    await interaction.channel.send(`📝 **Please type your CORRECT Roblox username:**\n\n*Make sure to spell it exactly as it appears on Roblox.*`);
   }
   
   else if (customId.startsWith('cancel_ticket_')) {
@@ -485,4 +623,4 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with MODAL POPUP search, FIXED buttons, and IMAGES!');
+console.log('🚀 Bot starting with AUTO IMAGES, PROFILE PICS, RETRY BUTTON, and SILENT KEEP-ALIVE!');
