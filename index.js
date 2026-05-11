@@ -19,7 +19,6 @@ let stock = {
 const activeTickets = new Map();
 const activeUsernameRequests = new Map();
 
-// ========== TICKET LOGGING FUNCTIONS ==========
 function saveTicketLog(ticketData) {
   const logFile = './ticket_logs.json';
   let existingLogs = [];
@@ -34,7 +33,6 @@ function saveTicketLog(ticketData) {
     logId: `log_${Date.now()}_${Math.random().toString(36).substring(7)}`
   });
   fs.writeFileSync(logFile, JSON.stringify(existingLogs, null, 2));
-  console.log(`📝 Ticket log saved: ${ticketData.ticketId}`);
 }
 
 async function logChannelMessages(channel, ticketInfo) {
@@ -45,7 +43,7 @@ async function logChannelMessages(channel, ticketInfo) {
       messageLog.push({
         author: msg.author.tag,
         authorId: msg.author.id,
-        content: msg.content || '[Embed or Attachment]',
+        content: msg.content || '[Embed]',
         timestamp: msg.createdAt.toISOString()
       });
     });
@@ -66,21 +64,19 @@ async function logChannelMessages(channel, ticketInfo) {
     };
     saveTicketLog(logData);
     return logData;
-  } catch (err) { console.error('Error logging:', err); return null; }
+  } catch (err) { return null; }
 }
 
-// Function to get a specific ticket log by ID
 function getTicketLog(ticketId) {
   try {
     if (fs.existsSync('./ticket_logs.json')) {
       const logs = JSON.parse(fs.readFileSync('./ticket_logs.json', 'utf8'));
       return logs.find(log => log.ticketId === ticketId);
     }
-  } catch (err) { console.error('Error reading log:', err); }
+  } catch (err) {}
   return null;
 }
 
-// Function to get all logs for a user
 function getUserTicketLogs(userId) {
   try {
     if (fs.existsSync('./ticket_logs.json')) {
@@ -100,8 +96,8 @@ async function closeTicket(channel, reason, ticketInfo) {
   }
   try {
     await channel.send(`📝 **Ticket closing...** Reason: ${reason}\nThis channel will close in 3 seconds.`);
-    setTimeout(() => channel.delete().catch(() => console.log('Channel already deleted')), 3000);
-  } catch (err) { console.log('Error closing channel:', err.message); }
+    setTimeout(() => channel.delete().catch(() => {}), 3000);
+  } catch (err) {}
   activeTickets.delete(channel.id);
 }
 
@@ -124,7 +120,6 @@ async function fetchRobloxUserAvatar(userId) {
 }
 
 async function updateAllItemImages() {
-  console.log('🖼️ Fetching images...');
   for (let item of stock.items) {
     const imageUrl = await fetchRobloxItemImage(item.robloxItemId);
     if (imageUrl) item.imageUrl = imageUrl;
@@ -135,7 +130,7 @@ async function updateAllItemImages() {
 function saveStock() { fs.writeFileSync('./stock.json', JSON.stringify(stock, null, 2)); }
 function loadStock() {
   try { if (fs.existsSync('./stock.json')) stock = JSON.parse(fs.readFileSync('./stock.json', 'utf8')); }
-  catch (err) { console.error('Failed to load stock:', err); }
+  catch (err) {}
 }
 
 const client = new Client({
@@ -161,7 +156,7 @@ client.once('ready', async () => {
       { name: 'refreshimages', description: '[STAFF] Refresh all item images' },
       { name: 'viewlogs', description: '[STAFF] View recent ticket logs' },
       { name: 'viewticket', description: '[STAFF] View a specific ticket log', options: [
-        { name: 'ticketid', type: 3, description: 'Ticket channel ID or log ID', required: true }
+        { name: 'ticketid', type: 3, description: 'Ticket channel ID', required: true }
       ]},
       { name: 'mytickets', description: 'View your own ticket history' }
     ]);
@@ -199,13 +194,6 @@ app.get('/logs', (req, res) => {
       res.json(logs.slice(-50));
     } else { res.json([]); }
   } catch (err) { res.status(500).json({ error: 'Could not read logs' }); }
-});
-app.get('/logs/:ticketId', (req, res) => {
-  try {
-    const log = getTicketLog(req.params.ticketId);
-    if (log) { res.json(log); } 
-    else { res.status(404).json({ error: 'Log not found' }); }
-  } catch (err) { res.status(500).json({ error: 'Could not read log' }); }
 });
 app.listen(process.env.PORT || 3000, () => console.log(`🌐 Web server on port ${process.env.PORT || 3000}`));
 
@@ -268,34 +256,14 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: `❌ No ticket found with ID: ${ticketId}`, ephemeral: true });
         return;
       }
-      // Create a paginated view of messages
-      const messagesPerPage = 20;
-      const totalPages = Math.ceil(log.messages.length / messagesPerPage);
-      let currentPage = 0;
-      
-      const generateMessageEmbed = (page) => {
-        const start = page * messagesPerPage;
-        const end = start + messagesPerPage;
-        const pageMessages = log.messages.slice(start, end);
-        const embed = new EmbedBuilder()
-          .setTitle(`📝 Ticket Log: ${log.ticketName}`)
-          .setDescription(`**Status:** ${log.status}\n**User:** <@${log.userId}>\n**Item:** ${log.item.name}\n**Price:** $${log.item.price}\n**Roblox User:** ${log.robloxUsername || 'Not provided'}\n**Created:** ${new Date(log.createdAt).toLocaleString()}\n**Closed:** ${new Date(log.closedAt).toLocaleString()}\n**Total Messages:** ${log.messages.length}`)
-          .setColor(0x0099FF);
-        
-        pageMessages.forEach(msg => {
-          embed.addFields({ name: `${msg.author}`, value: `${msg.content.substring(0, 100)}`, inline: false });
-        });
-        embed.setFooter({ text: `Page ${page + 1} of ${totalPages} | Ticket ID: ${log.ticketId}` });
-        return embed;
-      };
-      
-      const row = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder().setCustomId(`prev_page_${ticketId}_${currentPage}`).setLabel('◀ Previous').setStyle(ButtonStyle.Secondary).setDisabled(true),
-          new ButtonBuilder().setCustomId(`next_page_${ticketId}_${currentPage}`).setLabel('Next ▶').setStyle(ButtonStyle.Secondary).setDisabled(totalPages <= 1)
-        );
-      
-      await interaction.reply({ embeds: [generateMessageEmbed(0)], components: [row], ephemeral: true });
+      const embed = new EmbedBuilder()
+        .setTitle(`📝 Ticket Log: ${log.ticketName}`)
+        .setDescription(`**Status:** ${log.status}\n**User:** <@${log.userId}>\n**Item:** ${log.item.name}\n**Price:** $${log.item.price}\n**Roblox User:** ${log.robloxUsername || 'Not provided'}\n**Created:** ${new Date(log.createdAt).toLocaleString()}\n**Closed:** ${new Date(log.closedAt).toLocaleString()}\n**Total Messages:** ${log.messages.length}`)
+        .setColor(0x0099FF);
+      log.messages.slice(-20).forEach(msg => {
+        embed.addFields({ name: `${msg.author}`, value: msg.content.substring(0, 100), inline: false });
+      });
+      await interaction.reply({ embeds: [embed], ephemeral: true });
     }
     else if (interaction.commandName === 'mytickets') {
       const userLogs = getUserTicketLogs(interaction.user.id);
@@ -331,41 +299,7 @@ client.on('interactionCreate', async (interaction) => {
   else if (interaction.isButton()) {
     const customId = interaction.customId;
     
-    // Handle pagination for ticket view
-    if (customId.startsWith('prev_page_') || customId.startsWith('next_page_')) {
-      const parts = customId.split('_');
-      const action = parts[0];
-      const ticketId = parts[2];
-      let currentPage = parseInt(parts[3]);
-      const log = getTicketLog(ticketId);
-      if (!log) return;
-      const messagesPerPage = 20;
-      const totalPages = Math.ceil(log.messages.length / messagesPerPage);
-      
-      if (action === 'prev_page') currentPage--;
-      if (action === 'next_page') currentPage++;
-      
-      const start = currentPage * messagesPerPage;
-      const end = start + messagesPerPage;
-      const pageMessages = log.messages.slice(start, end);
-      const embed = new EmbedBuilder()
-        .setTitle(`📝 Ticket Log: ${log.ticketName}`)
-        .setDescription(`**Status:** ${log.status}\n**User:** <@${log.userId}>\n**Item:** ${log.item.name}\n**Price:** $${log.item.price}\n**Created:** ${new Date(log.createdAt).toLocaleString()}\n**Closed:** ${new Date(log.closedAt).toLocaleString()}`)
-        .setColor(0x0099FF);
-      pageMessages.forEach(msg => {
-        embed.addFields({ name: `${msg.author}`, value: msg.content.substring(0, 100), inline: false });
-      });
-      embed.setFooter({ text: `Page ${currentPage + 1} of ${totalPages}` });
-      
-      const row = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder().setCustomId(`prev_page_${ticketId}_${currentPage}`).setLabel('◀ Previous').setStyle(ButtonStyle.Secondary).setDisabled(currentPage === 0),
-          new ButtonBuilder().setCustomId(`next_page_${ticketId}_${currentPage}`).setLabel('Next ▶').setStyle(ButtonStyle.Secondary).setDisabled(currentPage + 1 >= totalPages)
-        );
-      await interaction.update({ embeds: [embed], components: [row] });
-    }
-    
-    else if (customId === 'back_to_stock' || customId === 'refresh_stock_view') {
+    if (customId === 'back_to_stock' || customId === 'refresh_stock_view') {
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('search_modal_button').setLabel('🔍 Search Stock').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('view_all_ephemeral').setLabel('📋 View All Items').setStyle(ButtonStyle.Secondary),
@@ -406,12 +340,7 @@ client.on('interactionCreate', async (interaction) => {
           { id: ROLE_STAFF_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
         ]
       });
-      activeTickets.set(channel.id, { 
-        userId: interaction.user.id, 
-        username: interaction.user.username,
-        item: item, 
-        status: 'awaiting_username' 
-      });
+      activeTickets.set(channel.id, { userId: interaction.user.id, username: interaction.user.username, item: item, status: 'awaiting_username' });
       const embed = new EmbedBuilder().setTitle(`🛒 Purchase: ${item.name}`).setDescription(`Price: **$${item.price}**\n\nType your Roblox username below to continue.`).setThumbnail(item.imageUrl).setColor(0x00FF00);
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`request_username_${item.id}`).setLabel('💰 Continue to Purchase').setStyle(ButtonStyle.Success),
@@ -427,11 +356,6 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply({ content: '❌ Cancelling ticket...', ephemeral: true });
       if (channel && ticketInfo) {
         await closeTicket(channel, 'cancelled_by_user', ticketInfo);
-      } else if (channel) {
-        try {
-          await channel.send('❌ **Ticket cancelled.** This channel will close in 3 seconds...');
-          setTimeout(() => channel.delete().catch(() => {}), 3000);
-        } catch (err) {}
       }
     }
     
@@ -440,21 +364,15 @@ client.on('interactionCreate', async (interaction) => {
       const item = stock.items.find(i => i.id === itemId);
       await interaction.reply({ content: '✅ Ready! **Type your Roblox username below**', ephemeral: false });
       activeUsernameRequests.set(interaction.user.id, { channelId: interaction.channel.id, item: item });
-      await interaction.channel.send(`📝 **Please type your EXACT Roblox username:**\n\nExample: \`Builderman\``);
+      await interaction.channel.send(`📝 **Please type your EXACT Roblox username:**`);
     }
     
     else if (customId === 'trade_accepted') {
       const ticketInfo = activeTickets.get(interaction.channel.id);
       if (ticketInfo && ticketInfo.status === 'trade_sent') {
         ticketInfo.status = 'completed';
-        await interaction.reply({ content: '✅ **Thank you for confirming!** Your purchase is now complete.', ephemeral: true });
-        const completeEmbed = new EmbedBuilder()
-          .setTitle('🎉 Purchase Complete!')
-          .setDescription(`Thank you for purchasing **${ticketInfo.item.name}**!\n\nEnjoy your item!`)
-          .setThumbnail(ticketInfo.item.imageUrl)
-          .setColor(0x00FF00);
-        await interaction.channel.send({ embeds: [completeEmbed] });
-        await closeTicket(interaction.channel, 'completed_successfully', ticketInfo);
+        await interaction.reply({ content: '✅ Purchase complete!', ephemeral: true });
+        await closeTicket(interaction.channel, 'completed', ticketInfo);
       }
     }
   }
@@ -472,7 +390,7 @@ client.on('messageCreate', async (message) => {
   const robloxUser = await findRobloxUserDirect(username);
   await searchingMsg.delete();
   if (!robloxUser) {
-    await message.channel.send(`❌ **Roblox user "${username}" not found**\n\n📝 Please check spelling and try again:`);
+    await message.channel.send(`❌ **Roblox user "${username}" not found**\n\nPlease check spelling and try again:`);
     return;
   }
   if (ticketInfo) { 
@@ -484,7 +402,7 @@ client.on('messageCreate', async (message) => {
   const confirmEmbed = new EmbedBuilder()
     .setTitle('✅ Is this your Roblox profile?')
     .setDescription(`**Username:** ${robloxUser.name}\n**Display Name:** ${robloxUser.displayName}\n**User ID:** ${robloxUser.id}`)
-    .addFields({ name: '🔗 Profile Link', value: robloxUser.profileUrl, inline: false })
+    .addFields({ name: 'Profile Link', value: robloxUser.profileUrl })
     .setImage(robloxUser.avatarUrl).setColor(0x00FF00);
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`confirm_trade_${item.id}_${robloxUser.id}`).setLabel('✅ Yes, That\'s Me').setStyle(ButtonStyle.Success),
@@ -504,115 +422,26 @@ client.on('interactionCreate', async (interaction) => {
     const robloxUserId = parseInt(parts[3]);
     const item = stock.items.find(i => i.id === itemId);
     const ticketInfo = activeTickets.get(interaction.channel.id);
-    
-    await interaction.reply({ content: `✅ **Confirmed!** Sending **${item.name}**...`, ephemeral: true });
-    
+    await interaction.reply({ content: `✅ Confirmed! Sending ${item.name}...`, ephemeral: true });
     const tradeId = `trade_${Date.now()}_${robloxUserId}`;
     if (ticketInfo) { ticketInfo.status = 'trade_sent'; ticketInfo.tradeId = tradeId; }
-    
-    const tradeEmbed = new EmbedBuilder()
-      .setTitle('📦 Trade Offer Sent!')
-      .setDescription(`**${item.name}** has been offered to you.`)
-      .setThumbnail(item.imageUrl)
-      .addFields(
-        { name: 'Item', value: item.name, inline: true },
-        { name: 'Price', value: `$${item.price}`, inline: true },
-        { name: 'Trade ID', value: `\`${tradeId}\``, inline: false }
-      )
-      .setColor(0x00FF00);
-    
-    await interaction.channel.send({ embeds: [tradeEmbed] });
-    
-    const warningEmbed = new EmbedBuilder()
-      .setTitle('⚠️⚠️⚠️ ACTION REQUIRED ⚠️⚠️⚠️')
-      .setDescription(`
-**YOUR TRADE OFFER HAS BEEN SENT TO ROBLOX!**
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-**📋 STEP-BY-STEP INSTRUCTIONS:**
-
-**1️⃣** Go to **Roblox.com** → **Trade** → **Incoming Trades**
-
-**2️⃣** Find the trade offer from our bot
-
-**3️⃣** Click **ACCEPT** on the trade
-
-**4️⃣** **COME BACK HERE** and click the big green button below
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-**⚠️ IMPORTANT WARNINGS:**
-
-• Your purchase is **NOT complete** until you click the button below
-
-• This ticket will **NOT close** until you confirm
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-**✅ AFTER ACCEPTING THE TRADE ON ROBLOX, CLICK THE BUTTON BELOW ✅**
-      `)
-      .setColor(0xFF0000)
-      .setFooter({ text: '⚠️ TICKET WILL REMAIN OPEN UNTIL YOU CONFIRM ⚠️' });
-    
-    const confirmRow = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId('trade_accepted')
-          .setLabel('✅ I HAVE ACCEPTED THE TRADE ON ROBLOX ✅')
-          .setStyle(ButtonStyle.Success)
-          .setEmoji('✅'),
-        new ButtonBuilder()
-          .setCustomId(`report_issue_${tradeId}`)
-          .setLabel('⚠️ REPORT ISSUE')
-          .setStyle(ButtonStyle.Danger)
-          .setEmoji('⚠️'),
-        new ButtonBuilder()
-          .setCustomId(`cancel_ticket_${interaction.channel.id}`)
-          .setLabel('❌ Cancel Order')
-          .setStyle(ButtonStyle.Danger)
-      );
-    
-    await interaction.channel.send({
-      content: `<@${interaction.user.id}>`,
-      embeds: [warningEmbed],
-      components: [confirmRow]
-    });
-    
-    setTimeout(async () => {
-      const freshTicket = activeTickets.get(interaction.channel.id);
-      if (freshTicket && freshTicket.status === 'trade_sent') {
-        const reminderEmbed = new EmbedBuilder()
-          .setTitle('🔔 REMINDER: Complete Your Trade')
-          .setDescription(`**Have you accepted the trade on Roblox yet?**\n\n➡️ **If YES:** Click the "I HAVE ACCEPTED THE TRADE ON ROBLOX" button above.\n\n➡️ **If NO:** Please check your Roblox trades inbox.`)
-          .setColor(0xFF6600);
-        await interaction.channel.send({ content: `<@${interaction.user.id}>`, embeds: [reminderEmbed] });
-      }
-    }, 120000);
+    await interaction.channel.send(`📦 Trade offer sent for **${item.name}**!\n\nAfter accepting on Roblox, click the "Trade Accepted" button below.`);
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('trade_accepted').setLabel('✅ I Accepted the Trade').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`cancel_ticket_${interaction.channel.id}`).setLabel('❌ Cancel').setStyle(ButtonStyle.Danger)
+    );
+    await interaction.channel.send({ content: `<@${interaction.user.id}>`, components: [row] });
   }
   
-  // ========== FIXED: RETRY BUTTON - Now works properly ==========
   else if (customId.startsWith('retry_username_')) {
     const parts = customId.split('_');
     const itemId = parseInt(parts[3]);
     const item = stock.items.find(i => i.id === itemId);
-    
     await interaction.reply({ content: '🔄 Please type a different Roblox username.', ephemeral: true });
-    
-    // Store the new pending request
-    activeUsernameRequests.set(interaction.user.id, { 
-      channelId: interaction.channel.id, 
-      item: item 
-    });
-    
-    await interaction.channel.send(`📝 **Please type your CORRECT Roblox username:**\n\n*Make sure to spell it exactly as it appears on Roblox.*`);
+    activeUsernameRequests.set(interaction.user.id, { channelId: interaction.channel.id, item: item });
+    await interaction.channel.send(`📝 **Please type your CORRECT Roblox username:**`);
   }
-  
-  else if (customId.startsWith('report_issue_')) {
-    const tradeId = customId.split('_')[2];
-    await interaction.reply({ content: '⚠️ **Issue reported!** A staff member will assist you shortly.', ephemeral: true });
-    const staffChannel = interaction.guild.channels.cache.find(c => c.name === 'staff-tickets') || interaction.channel;
-    const issueEmbed = new EmbedBuilder()
-      .setTitle('🚨 Issue Reported!')
-      .setDescription(`**User:** <@${interaction.user.id}>\n**Trade ID:** \`${tradeId}\`\n**Channel:** ${interaction.channel}`)
-      .setColor(0xFF0000)
+});
+
+client.login(DISCORD_TOKEN);
+console.log('🚀 Bot starting successfully!');
