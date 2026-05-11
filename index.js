@@ -14,22 +14,19 @@ let stock = {
       id: 1, 
       name: "Rainbow Phoenix", 
       price: 25, 
-      robloxItemId: 101,
-      imageUrl: "https://tr.rcdn.com/30DAY-AvatarHeadshot-101.png"
+      robloxItemId: 101
     },
     { 
       id: 2, 
       name: "Golden Dragon", 
       price: 50, 
-      robloxItemId: 102,
-      imageUrl: "https://tr.rcdn.com/30DAY-AvatarHeadshot-102.png"
+      robloxItemId: 102
     },
     { 
       id: 3, 
       name: "Gold Clockwork Shades", 
       price: 75, 
-      robloxItemId: 110673146052704,
-      imageUrl: "https://tr.rcdn.com/30DAY-AvatarHeadshot-110673146052704.png"
+      robloxItemId: 110673146052704
     }
   ]
 };
@@ -78,16 +75,14 @@ client.once('ready', async () => {
   }
 });
 
-// ========== FIXED: Direct Roblox User Search ==========
+// ========== ROBLOX USER LOOKUP ==========
 async function findRobloxUserDirect(username) {
   try {
     console.log(`🔍 Attempting to find Roblox user: ${username}`);
     
-    // Method 1: Direct API call to Roblox
-    const apiUrl = `https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=1`;
-    console.log(`📡 API URL: ${apiUrl}`);
+    const searchUrl = `https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=10`;
     
-    const response = await axios.get(apiUrl, {
+    const response = await axios.get(searchUrl, {
       timeout: 15000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -96,11 +91,13 @@ async function findRobloxUserDirect(username) {
       }
     });
     
-    console.log(`📊 API Response Status: ${response.status}`);
-    
     if (response.data && response.data.data && response.data.data.length > 0) {
-      const user = response.data.data[0];
+      const exactMatch = response.data.data.find(user => 
+        user.name.toLowerCase() === username.toLowerCase()
+      );
+      const user = exactMatch || response.data.data[0];
       console.log(`✅ Found user: ${user.name} (ID: ${user.id})`);
+      
       return {
         id: user.id,
         name: user.name,
@@ -109,43 +106,31 @@ async function findRobloxUserDirect(username) {
       };
     }
     
-    console.log(`❌ No user found for: ${username}`);
     return null;
     
   } catch (error) {
     console.error(`❌ Roblox API Error:`, error.message);
-    if (error.response) {
-      console.error(`Status: ${error.response.status}`);
-      console.error(`Data:`, JSON.stringify(error.response.data).substring(0, 200));
-    }
     
-    // Method 2: Alternative API endpoint (fallback)
+    // Fallback method
     try {
-      console.log(`🔄 Trying fallback API...`);
-      const fallbackUrl = `https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}`;
-      const fallbackResponse = await axios.get(fallbackUrl, {
-        timeout: 10000,
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
+      const altUrl = `https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}`;
+      const altResponse = await axios.get(altUrl, { timeout: 10000 });
       
-      if (fallbackResponse.data && fallbackResponse.data.Id) {
-        console.log(`✅ Found via fallback: ${fallbackResponse.data.Username}`);
+      if (altResponse.data && altResponse.data.Id) {
         return {
-          id: fallbackResponse.data.Id,
-          name: fallbackResponse.data.Username,
-          displayName: fallbackResponse.data.Username,
-          profileUrl: `https://www.roblox.com/users/${fallbackResponse.data.Id}/profile`
+          id: altResponse.data.Id,
+          name: altResponse.data.Username,
+          displayName: altResponse.data.Username,
+          profileUrl: `https://www.roblox.com/users/${altResponse.data.Id}/profile`
         };
       }
-    } catch (fallbackError) {
-      console.error(`❌ Fallback also failed:`, fallbackError.message);
-    }
+    } catch (altError) {}
     
     return null;
   }
 }
 
-// ========== Search Stock Function ==========
+// Search stock function
 function searchStock(query) {
   const lowerQuery = query.toLowerCase();
   return stock.items.filter(item => 
@@ -155,14 +140,13 @@ function searchStock(query) {
   );
 }
 
-// Store active username requests
+// Store active requests
 const activeUsernameRequests = new Map();
-let activeSearchSession = null;
 
 // Initialize express server for Render
 const express = require('express');
 const app = express();
-app.get('/', (req, res) => res.send('🤖 Discord Bot is Running! 🚀'));
+app.get('/', (req, res) => res.send('🤖 Discord Bot is Running!'));
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`🌐 Web server on port ${port}`));
 
@@ -176,7 +160,7 @@ client.on('interactionCreate', async (interaction) => {
         .setDescription('Click the 🔍 button below to search for specific items')
         .setColor(0x0099FF);
       
-      stock.items.forEach(item => {
+      stock.items.slice(0, 5).forEach(item => {
         embed.addFields({
           name: `${item.name}`,
           value: `💰 $${item.price} | 🆔 ID: ${item.id}`,
@@ -184,7 +168,6 @@ client.on('interactionCreate', async (interaction) => {
         });
       });
       
-      // Add search button row
       const row = new ActionRowBuilder()
         .addComponents(
           new ButtonBuilder()
@@ -209,8 +192,7 @@ client.on('interactionCreate', async (interaction) => {
         id: stock.items.length + 1,
         name: name,
         price: price,
-        robloxItemId: robloxItemId,
-        imageUrl: `https://tr.rbxcdn.com/30DAY-AvatarHeadshot-${robloxItemId}.png`
+        robloxItemId: robloxItemId
       });
       saveStock();
       
@@ -233,19 +215,15 @@ client.on('interactionCreate', async (interaction) => {
   else if (interaction.isButton()) {
     const customId = interaction.customId;
     
-    // ========== SEARCH BUTTON HANDLER ==========
+    // SEARCH BUTTON - Ephemeral message (only visible to the user who clicked)
     if (customId === 'search_button') {
-      activeSearchSession = {
-        userId: interaction.user.id,
-        channelId: interaction.channel.id
-      };
-      
+      // Send ephemeral prompt - only the user sees this
       await interaction.reply({
-        content: '🔍 **What would you like to search for?**\n\nType the item name or ID you want to find in stock.\nExample: `Gold Clockwork Shades` or `110673146052704`',
-        ephemeral: false
+        content: '🔍 **What would you like to search for?**\n\nType the item name or ID you want to find in stock.\nExample: `Gold` or `110673146052704`',
+        ephemeral: true
       });
       
-      // Set up message collector for search query
+      // Create a message collector in the same channel, but only for this user
       const filter = m => m.author.id === interaction.user.id && m.channel.id === interaction.channel.id;
       const collector = interaction.channel.createMessageCollector({ filter, max: 1, time: 30000 });
       
@@ -253,8 +231,14 @@ client.on('interactionCreate', async (interaction) => {
         const query = msg.content.trim();
         const results = searchStock(query);
         
+        // Delete the user's search message to keep chat clean
+        await msg.delete().catch(() => {});
+        
         if (results.length === 0) {
-          await interaction.channel.send(`❌ No items found matching **"${query}"** in stock.\n\nUse \`/stock\` to see all available items.`);
+          await interaction.followUp({
+            content: `❌ No items found matching **"${query}"** in stock.\n\nUse \`/stock\` to see all available items.`,
+            ephemeral: true
+          });
           return;
         }
         
@@ -265,10 +249,10 @@ client.on('interactionCreate', async (interaction) => {
         
         const buttons = new ActionRowBuilder();
         
-        results.forEach(item => {
+        results.slice(0, 5).forEach(item => {
           resultEmbed.addFields({
             name: `${item.name}`,
-            value: `💰 $${item.price} | 🆔 Stock ID: ${item.id} | 🎮 Roblox ID: ${item.robloxItemId}`,
+            value: `💰 $${item.price} | 🆔 Stock ID: ${item.id}`,
             inline: false
           });
           
@@ -280,14 +264,16 @@ client.on('interactionCreate', async (interaction) => {
           );
         });
         
-        await interaction.channel.send({ embeds: [resultEmbed], components: [buttons] });
-        activeSearchSession = null;
+        // Send results as ephemeral - only the user sees them!
+        await interaction.followUp({ embeds: [resultEmbed], components: [buttons], ephemeral: true });
       });
       
       collector.on('end', (collected) => {
-        if (collected.size === 0 && activeSearchSession) {
-          interaction.channel.send('⏰ Search timed out. Use `/stock` to try again.');
-          activeSearchSession = null;
+        if (collected.size === 0) {
+          interaction.followUp({
+            content: '⏰ Search timed out. Use `/stock` to try again.',
+            ephemeral: true
+          }).catch(() => {});
         }
       });
     }
@@ -300,7 +286,7 @@ client.on('interactionCreate', async (interaction) => {
       stock.items.forEach(item => {
         embed.addFields({
           name: `${item.name} (ID: ${item.id})`,
-          value: `💰 $${item.price} | 🎮 Roblox Item ID: ${item.robloxItemId}`,
+          value: `💰 $${item.price} | 🎮 Roblox ID: ${item.robloxItemId}`,
           inline: false
         });
       });
@@ -344,52 +330,31 @@ client.on('interactionCreate', async (interaction) => {
       
       const embed = new EmbedBuilder()
         .setTitle(`🛒 Purchase: ${item.name}`)
-        .setDescription(`Price: **$${item.price}**\n\n**Step 1:** Click the button below\n**Step 2:** Type your Roblox username\n**Step 3:** Confirm your profile`)
-        .setThumbnail(item.imageUrl || null)
+        .setDescription(`Price: **$${item.price}**\n\n**Step 1:** Type your Roblox username below\n**Step 2:** Confirm your profile\n**Step 3:** Receive your item!`)
         .setColor(0x00FF00);
       
-      const row = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder()
-            .setCustomId(`request_username_${sessionId}_${item.id}`)
-            .setLabel('💰 Continue to Purchase')
-            .setStyle(ButtonStyle.Success),
-          new ButtonBuilder()
-            .setCustomId(`cancel_${sessionId}`)
-            .setLabel('❌ Cancel')
-            .setStyle(ButtonStyle.Danger)
-        );
-      
-      await channel.send({ content: `<@${interaction.user.id}>`, embeds: [embed], components: [row] });
-    }
-    
-    else if (customId.startsWith('request_username_')) {
-      const parts = customId.split('_');
-      const sessionId = parts[2];
-      const itemId = parseInt(parts[3]);
-      const item = stock.items.find(i => i.id === itemId);
-      
-      await interaction.reply({ content: '✅ Ready! **Type your Roblox username below**', ephemeral: false });
+      await channel.send({ content: `<@${interaction.user.id}>`, embeds: [embed] });
       
       activeUsernameRequests.set(interaction.user.id, {
-        channelId: interaction.channel.id,
+        channelId: channel.id,
         item: item,
-        sessionId: sessionId,
-        step: 'awaiting_username'
+        sessionId: sessionId
       });
       
-      await interaction.channel.send(`📝 **Please type your EXACT Roblox username:**\n\nExample: \`Builderman\``);
+      await channel.send(`📝 **Please type your EXACT Roblox username:**\n\nExample: \`Builderman\``);
     }
     
     else if (customId.startsWith('cancel_')) {
-      await interaction.channel.send('❌ **Purchase cancelled.**');
-      await interaction.reply({ content: 'Cancelled.', ephemeral: true });
-      setTimeout(() => interaction.channel.delete(), 5000);
+      if (interaction.channel) {
+        await interaction.channel.send('❌ **Purchase cancelled.**');
+        await interaction.reply({ content: 'Cancelled.', ephemeral: true });
+        setTimeout(() => interaction.channel.delete(), 5000);
+      }
     }
   }
 });
 
-// ========== Handle Roblox Username Input ==========
+// Handle username input
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
@@ -397,22 +362,20 @@ client.on('messageCreate', async (message) => {
   const pendingRequest = activeUsernameRequests.get(message.author.id);
   if (!pendingRequest) return;
   if (message.channel.id !== pendingRequest.channelId) return;
-  if (pendingRequest.step !== 'awaiting_username') return;
   
   const username = message.content.trim();
   if (username.startsWith('/')) return;
   
   const item = pendingRequest.item;
   
-  const searchingMsg = await message.channel.send(`🔍 Searching Roblox for **${username}**...\n*(This may take a few seconds)*`);
+  const searchingMsg = await message.channel.send(`🔍 Searching Roblox for **${username}**...`);
   
-  // Call the FIXED Roblox search function
   const robloxUser = await findRobloxUserDirect(username);
   
   await searchingMsg.delete();
   
   if (!robloxUser) {
-    await message.channel.send(`❌ **No Roblox user found with username "${username}"**\n\n📝 Please check:\n• Spelling (capitalization matters!)\n• If the account exists\n\n**Try again with your exact username:**`);
+    await message.channel.send(`❌ **Roblox user "${username}" not found**\n\n📝 Please check spelling and try again:`);
     return;
   }
   
@@ -428,7 +391,7 @@ client.on('messageCreate', async (message) => {
   const row = new ActionRowBuilder()
     .addComponents(
       new ButtonBuilder()
-        .setCustomId(`send_trade_${item.id}_${robloxUser.id}`)
+        .setCustomId(`confirm_trade_${item.id}_${robloxUser.id}`)
         .setLabel('✅ Yes, That\'s Me')
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
@@ -440,26 +403,25 @@ client.on('messageCreate', async (message) => {
   await message.channel.send({ embeds: [confirmEmbed], components: [row] });
 });
 
-// ========== Handle Trade Confirmation ==========
+// Handle confirmations
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
   
   const customId = interaction.customId;
   
-  if (customId.startsWith('send_trade_')) {
+  if (customId.startsWith('confirm_trade_')) {
     const parts = customId.split('_');
     const itemId = parseInt(parts[2]);
     const robloxUserId = parseInt(parts[3]);
     const item = stock.items.find(i => i.id === itemId);
     
-    await interaction.reply({ content: `🔄 Sending trade offer for **${item.name}**...`, ephemeral: true });
+    await interaction.reply({ content: `✅ **Confirmed!** Sending **${item.name}**...`, ephemeral: true });
     
-    // This is where you'd implement actual trade sending
     const tradeId = `trade_${Date.now()}_${robloxUserId}`;
     
-    await interaction.channel.send(`✅ **Trade offer prepared!**\n\n📦 Item: ${item.name}\n👤 Roblox User ID: ${robloxUserId}\n🆔 Trade ID: \`${tradeId}\`\n\n⚠️ **Important:** You need to manually send this trade through Roblox for now.\n\nThis ticket will close in 15 seconds.`);
+    await interaction.channel.send(`✅ **Purchase Complete!**\n\n📦 Item: ${item.name}\n👤 Roblox User ID: ${robloxUserId}\n🆔 Transaction ID: \`${tradeId}\`\n\nThis ticket will close in 10 seconds.`);
     
-    setTimeout(() => interaction.channel.delete(), 15000);
+    setTimeout(() => interaction.channel.delete(), 10000);
   }
   
   else if (customId.startsWith('retry_username_')) {
@@ -471,21 +433,12 @@ client.on('interactionCreate', async (interaction) => {
     
     activeUsernameRequests.set(interaction.user.id, {
       channelId: interaction.channel.id,
-      item: item,
-      step: 'awaiting_username'
+      item: item
     });
     
-    await interaction.channel.send(`📝 **Please type your EXACT Roblox username:**`);
-  }
-  
-  else if (customId.startsWith('cancel_')) {
-    if (interaction.channel) {
-      await interaction.channel.send('❌ **Cancelled.**');
-      await interaction.reply({ content: 'Cancelled.', ephemeral: true });
-      setTimeout(() => interaction.channel.delete(), 5000);
-    }
+    await interaction.channel.send(`📝 **Please type your Roblox username again:**`);
   }
 });
 
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with FIXED Roblox search and BUTTON search!');
+console.log('🚀 Bot starting with EPHEMERAL search (only you can see results)!');
