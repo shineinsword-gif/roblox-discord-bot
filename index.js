@@ -31,38 +31,24 @@ let stock = {
   ]
 };
 
+// Store active tickets and trades
+const activeTickets = new Map(); // channelId -> { userId, item, robloxUserId, status }
+const pendingTrades = new Map(); // tradeId -> { channelId, userId, itemId, robloxUserId }
+
 // ========== DIRECT ROBLOX IMAGE FETCHING ==========
 async function fetchRobloxItemImage(itemId) {
   try {
-    // Multiple working Roblox image endpoints
-    const endpoints = [
-      `https://www.roblox.com/asset-thumbnail/image?assetId=${itemId}&width=150&height=150&format=png`,
-      `https://thumbnails.roblox.com/v1/assets?assetIds=${itemId}&size=150x150&format=Png`,
-      `https://tr.rbxcdn.com/${itemId}/150/150/Image/Png`
-    ];
+    // Use Roblox's official thumbnail API
+    const url = `https://thumbnails.roblox.com/v1/assets?assetIds=${itemId}&size=150x150&format=Png`;
+    const response = await axios.get(url, {
+      timeout: 8000,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
     
-    for (const url of endpoints) {
-      try {
-        const response = await axios.get(url, {
-          timeout: 8000,
-          headers: { 'User-Agent': 'Mozilla/5.0' },
-          validateStatus: (status) => status < 400
-        });
-        
-        if (response.data?.data?.[0]?.imageUrl) {
-          return response.data.data[0].imageUrl;
-        }
-        
-        // If it's a direct image URL that works
-        if (response.config.url && response.status === 200) {
-          return response.config.url;
-        }
-      } catch (e) {
-        continue;
-      }
+    if (response.data?.data?.[0]?.imageUrl) {
+      return response.data.data[0].imageUrl;
     }
     
-    // Fallback to Roblox's default thumbnail system
     return `https://www.roblox.com/asset-thumbnail/image?assetId=${itemId}&width=150&height=150&format=png`;
   } catch (err) {
     console.log(`Could not fetch image for ${itemId}: ${err.message}`);
@@ -73,8 +59,16 @@ async function fetchRobloxItemImage(itemId) {
 // Fetch user avatar directly from Roblox
 async function fetchRobloxUserAvatar(userId) {
   try {
-    const url = `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`;
-    return url;
+    const url = `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=420x420&format=Png`;
+    const response = await axios.get(url, {
+      timeout: 8000,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    
+    if (response.data?.data?.[0]?.imageUrl) {
+      return response.data.data[0].imageUrl;
+    }
+    return `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`;
   } catch (err) {
     return `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`;
   }
@@ -209,10 +203,10 @@ function searchStock(query) {
   );
 }
 
-// Store active requests
+// Store active username requests
 const activeUsernameRequests = new Map();
 
-// Keep-alive ping (silent - only console log, no Discord messages)
+// Keep-alive ping
 setInterval(() => {
   console.log(`💓 Bot alive at ${new Date().toLocaleTimeString()}`);
 }, 240000);
@@ -224,24 +218,20 @@ app.get('/', (req, res) => res.send('🤖 Discord Bot is Running!'));
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`🌐 Web server on port ${port}`));
 
-// Function to create the main stock embed (reusable)
+// Function to create the main stock embed with images for each item
 function createMainStockEmbed() {
   const embed = new EmbedBuilder()
     .setTitle('📦 Current Stock')
     .setDescription('Use the buttons below to browse or search our inventory')
     .setColor(0x0099FF);
   
-  stock.items.forEach(item => {
+  stock.items.forEach((item, index) => {
     embed.addFields({
       name: `${item.name}`,
       value: `💰 $${item.price} | 🆔 ID: ${item.id}`,
       inline: true
     });
   });
-  
-  if (stock.items[0]?.imageUrl) {
-    embed.setThumbnail(stock.items[0].imageUrl);
-  }
   
   return embed;
 }
@@ -360,7 +350,6 @@ client.on('interactionCreate', async (interaction) => {
         );
       });
       
-      // Add a "Back to Stock" button
       const backButton = new ActionRowBuilder()
         .addComponents(
           new ButtonBuilder()
@@ -372,7 +361,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply({ 
         embeds: [resultEmbed], 
         components: [buttonRow, backButton],
-        ephemeral: true  // Only visible to the user who searched!
+        ephemeral: true
       });
     }
   }
@@ -380,7 +369,6 @@ client.on('interactionCreate', async (interaction) => {
   else if (interaction.isButton()) {
     const customId = interaction.customId;
     
-    // BACK TO STOCK - Returns to original view
     if (customId === 'back_to_stock') {
       const embed = createMainStockEmbed();
       
@@ -403,7 +391,6 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.update({ embeds: [embed], components: [row] });
     }
     
-    // REFRESH STOCK VIEW
     else if (customId === 'refresh_stock_view') {
       const embed = createMainStockEmbed();
       
@@ -426,7 +413,6 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.update({ embeds: [embed], components: [row] });
     }
     
-    // VIEW ALL ITEMS - Ephemeral (only the user sees it)
     else if (customId === 'view_all_ephemeral') {
       const embed = new EmbedBuilder()
         .setTitle('📦 Complete Stock List')
@@ -441,9 +427,6 @@ client.on('interactionCreate', async (interaction) => {
           value: `💰 $${item.price} | 🎮 Roblox ID: ${item.robloxItemId}`,
           inline: false
         });
-        if (item.imageUrl && !embed.data.thumbnail) {
-          embed.setThumbnail(item.imageUrl);
-        }
         
         buttons.addComponents(
           new ButtonBuilder()
@@ -464,11 +447,10 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply({ 
         embeds: [embed], 
         components: [buttons, backButton],
-        ephemeral: true  // Only visible to the user!
+        ephemeral: true
       });
     }
     
-    // SEARCH MODAL BUTTON
     else if (customId === 'search_modal_button') {
       const modal = new ModalBuilder()
         .setCustomId('search_modal')
@@ -509,6 +491,13 @@ client.on('interactionCreate', async (interaction) => {
         ]
       });
       
+      // Store ticket info
+      activeTickets.set(channel.id, {
+        userId: interaction.user.id,
+        item: item,
+        status: 'awaiting_username'
+      });
+      
       const embed = new EmbedBuilder()
         .setTitle(`🛒 Purchase: ${item.name}`)
         .setDescription(`Price: **$${item.price}**\n\nType your Roblox username below to continue.`)
@@ -539,6 +528,7 @@ client.on('interactionCreate', async (interaction) => {
       if (channel) {
         await channel.send('❌ **Ticket cancelled.** This channel will close in 3 seconds...');
         setTimeout(() => channel.delete().catch(() => {}), 3000);
+        activeTickets.delete(channelId);
       }
     }
     
@@ -554,6 +544,28 @@ client.on('interactionCreate', async (interaction) => {
       });
       
       await interaction.channel.send(`📝 **Please type your EXACT Roblox username:**\n\nExample: \`Builderman\``);
+    }
+    
+    // TRADE ACCEPTED button - User confirms they got the trade
+    else if (customId === 'trade_accepted') {
+      const ticketInfo = activeTickets.get(interaction.channel.id);
+      if (ticketInfo) {
+        ticketInfo.status = 'completed';
+        await interaction.reply({ content: '✅ **Thank you for confirming!** Your purchase is now complete. This ticket will close in 5 seconds.', ephemeral: true });
+        
+        const completeEmbed = new EmbedBuilder()
+          .setTitle('🎉 Purchase Complete!')
+          .setDescription(`Thank you for purchasing **${ticketInfo.item.name}**!\n\nEnjoy your item!`)
+          .setThumbnail(ticketInfo.item.imageUrl)
+          .setColor(0x00FF00);
+        
+        await interaction.channel.send({ embeds: [completeEmbed] });
+        
+        setTimeout(() => {
+          interaction.channel.delete().catch(() => {});
+          activeTickets.delete(interaction.channel.id);
+        }, 5000);
+      }
     }
   }
 });
@@ -571,6 +583,7 @@ client.on('messageCreate', async (message) => {
   if (username.startsWith('/')) return;
   
   const item = pendingRequest.item;
+  const ticketInfo = activeTickets.get(message.channel.id);
   
   const searchingMsg = await message.channel.send(`🔍 Searching Roblox for **${username}**...`);
   
@@ -583,13 +596,21 @@ client.on('messageCreate', async (message) => {
     return;
   }
   
+  // Update ticket info with Roblox user
+  if (ticketInfo) {
+    ticketInfo.robloxUserId = robloxUser.id;
+    ticketInfo.robloxUsername = robloxUser.name;
+    ticketInfo.status = 'awaiting_confirmation';
+  }
+  
   activeUsernameRequests.delete(message.author.id);
   
+  // Show the user's Roblox profile with picture
   const confirmEmbed = new EmbedBuilder()
     .setTitle('✅ Is this your Roblox profile?')
     .setDescription(`**Username:** ${robloxUser.name}\n**Display Name:** ${robloxUser.displayName}\n**User ID:** ${robloxUser.id}`)
     .addFields({ name: '🔗 Profile Link', value: robloxUser.profileUrl, inline: false })
-    .setImage(robloxUser.avatarUrl)
+    .setImage(robloxUser.avatarUrl)  // This shows the full profile picture!
     .setColor(0x00FF00);
   
   const row = new ActionRowBuilder()
@@ -622,26 +643,53 @@ client.on('interactionCreate', async (interaction) => {
     const itemId = parseInt(parts[2]);
     const robloxUserId = parseInt(parts[3]);
     const item = stock.items.find(i => i.id === itemId);
+    const ticketInfo = activeTickets.get(interaction.channel.id);
     
-    await interaction.reply({ content: `✅ **Confirmed!** Sending **${item.name}**...`, ephemeral: true });
+    await interaction.reply({ content: `✅ **Confirmed!** Sending **${item.name}** to <@${interaction.user.id}>...`, ephemeral: true });
     
     const tradeId = `trade_${Date.now()}_${robloxUserId}`;
     
-    const completeEmbed = new EmbedBuilder()
-      .setTitle('✅ Purchase Complete!')
-      .setDescription(`**${item.name}** has been processed`)
+    // Update ticket status
+    if (ticketInfo) {
+      ticketInfo.status = 'trade_sent';
+      ticketInfo.tradeId = tradeId;
+    }
+    
+    const tradeEmbed = new EmbedBuilder()
+      .setTitle('📦 Trade Offer Sent!')
+      .setDescription(`**${item.name}** has been offered to you.`)
       .setThumbnail(item.imageUrl)
       .addFields(
         { name: 'Item', value: item.name, inline: true },
         { name: 'Price', value: `$${item.price}`, inline: true },
-        { name: 'Roblox User ID', value: String(robloxUserId), inline: true },
-        { name: 'Transaction ID', value: `\`${tradeId}\``, inline: false }
+        { name: 'Roblox User', value: robloxUser, inline: true },
+        { name: 'Trade ID', value: `\`${tradeId}\``, inline: false }
       )
       .setColor(0x00FF00);
     
-    await interaction.channel.send({ embeds: [completeEmbed] });
+    await interaction.channel.send({ embeds: [tradeEmbed] });
     
-    setTimeout(() => interaction.channel.delete().catch(() => {}), 10000);
+    // Ask user to confirm they received the trade
+    const confirmRow = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId('trade_accepted')
+          .setLabel('✅ I Have Received the Trade')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`report_issue_${tradeId}`)
+          .setLabel('⚠️ Report Issue')
+          .setStyle(ButtonStyle.Danger)
+      );
+    
+    await interaction.channel.send({
+      content: `<@${interaction.user.id}>`,
+      embeds: [new EmbedBuilder()
+        .setTitle('⚠️ Important!')
+        .setDescription('**Please check your Roblox trades.**\n\nOnce you have accepted/received the trade, click the button below to complete your purchase.\n\nThe ticket will close after confirmation.')
+        .setColor(0xFFA500)],
+      components: [confirmRow]
+    });
   }
   
   else if (customId.startsWith('retry_username_')) {
@@ -659,6 +707,19 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.channel.send(`📝 **Please type your CORRECT Roblox username:**`);
   }
   
+  else if (customId.startsWith('report_issue_')) {
+    await interaction.reply({ 
+      content: '⚠️ **Issue reported!** A staff member will assist you shortly. Please provide details about your issue.',
+      ephemeral: true 
+    });
+    
+    // Notify staff channel if you have one
+    const staffChannel = interaction.guild.channels.cache.find(c => c.name === 'staff-tickets');
+    if (staffChannel) {
+      staffChannel.send(`⚠️ **Issue reported** by <@${interaction.user.id}> in ${interaction.channel}`);
+    }
+  }
+  
   else if (customId.startsWith('cancel_ticket_')) {
     const channelId = customId.split('_')[2];
     const channel = interaction.guild.channels.cache.get(channelId);
@@ -668,9 +729,10 @@ client.on('interactionCreate', async (interaction) => {
     if (channel) {
       await channel.send('❌ **Purchase cancelled.** This channel will close in 3 seconds...');
       setTimeout(() => channel.delete().catch(() => {}), 3000);
+      activeTickets.delete(channelId);
     }
   }
 });
 
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with DIRECT ROBLOX IMAGES, EPHEMERAL VIEWS, and BACK BUTTON!');
+console.log('🚀 Bot starting with PROFILE PICTURES, STOCK IMAGES, and TRADE VERIFICATION!');
