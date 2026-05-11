@@ -44,6 +44,7 @@ async function logChannelMessages(channel, ticketInfo) {
     messages.reverse().forEach(msg => {
       messageLog.push({
         author: msg.author.tag,
+        authorId: msg.author.id,
         content: msg.content || '[Embed or Attachment]',
         timestamp: msg.createdAt.toISOString()
       });
@@ -64,7 +65,30 @@ async function logChannelMessages(channel, ticketInfo) {
       messageCount: messageLog.length
     };
     saveTicketLog(logData);
-  } catch (err) { console.error('Error logging:', err); }
+    return logData;
+  } catch (err) { console.error('Error logging:', err); return null; }
+}
+
+// Function to get a specific ticket log by ID
+function getTicketLog(ticketId) {
+  try {
+    if (fs.existsSync('./ticket_logs.json')) {
+      const logs = JSON.parse(fs.readFileSync('./ticket_logs.json', 'utf8'));
+      return logs.find(log => log.ticketId === ticketId);
+    }
+  } catch (err) { console.error('Error reading log:', err); }
+  return null;
+}
+
+// Function to get all logs for a user
+function getUserTicketLogs(userId) {
+  try {
+    if (fs.existsSync('./ticket_logs.json')) {
+      const logs = JSON.parse(fs.readFileSync('./ticket_logs.json', 'utf8'));
+      return logs.filter(log => log.userId === userId).reverse();
+    }
+  } catch (err) { return []; }
+  return [];
 }
 
 async function closeTicket(channel, reason, ticketInfo) {
@@ -135,7 +159,11 @@ client.once('ready', async () => {
         { name: 'itemid', type: 4, description: 'Item ID to remove', required: true }
       ]},
       { name: 'refreshimages', description: '[STAFF] Refresh all item images' },
-      { name: 'viewlogs', description: '[STAFF] View recent ticket logs' }
+      { name: 'viewlogs', description: '[STAFF] View recent ticket logs' },
+      { name: 'viewticket', description: '[STAFF] View a specific ticket log', options: [
+        { name: 'ticketid', type: 3, description: 'Ticket channel ID or log ID', required: true }
+      ]},
+      { name: 'mytickets', description: 'View your own ticket history' }
     ]);
     console.log('✅ Commands registered!');
   }
@@ -171,6 +199,13 @@ app.get('/logs', (req, res) => {
       res.json(logs.slice(-50));
     } else { res.json([]); }
   } catch (err) { res.status(500).json({ error: 'Could not read logs' }); }
+});
+app.get('/logs/:ticketId', (req, res) => {
+  try {
+    const log = getTicketLog(req.params.ticketId);
+    if (log) { res.json(log); } 
+    else { res.status(404).json({ error: 'Log not found' }); }
+  } catch (err) { res.status(500).json({ error: 'Could not read log' }); }
 });
 app.listen(process.env.PORT || 3000, () => console.log(`🌐 Web server on port ${process.env.PORT || 3000}`));
 
@@ -218,13 +253,64 @@ client.on('interactionCreate', async (interaction) => {
           const logs = JSON.parse(fs.readFileSync('./ticket_logs.json', 'utf8'));
           const recentLogs = logs.slice(-10).reverse();
           if (recentLogs.length === 0) { await interaction.reply('📝 No ticket logs found yet.'); return; }
-          const logEmbed = new EmbedBuilder().setTitle('📝 Recent Ticket Logs').setDescription(`Last ${recentLogs.length} tickets`).setColor(0x0099FF);
+          const logEmbed = new EmbedBuilder().setTitle('📝 Recent Ticket Logs').setDescription(`Last ${recentLogs.length} tickets\nUse \`/viewticket <ticketId>\` to see full conversation`).setColor(0x0099FF);
           recentLogs.forEach(log => {
-            logEmbed.addFields({ name: `${log.ticketName} (${log.status})`, value: `User: <@${log.userId}>\nItem: ${log.item.name}\nMessages: ${log.messageCount}\nClosed: ${new Date(log.closedAt).toLocaleString()}`, inline: false });
+            logEmbed.addFields({ name: `${log.ticketName} (${log.status})`, value: `User: <@${log.userId}>\nItem: ${log.item.name}\nMessages: ${log.messageCount}\nTicket ID: \`${log.ticketId}\``, inline: false });
           });
           await interaction.reply({ embeds: [logEmbed], ephemeral: true });
         } else { await interaction.reply('📝 No ticket logs found yet.'); }
       } catch (err) { await interaction.reply('❌ Error reading logs.'); }
+    }
+    else if (interaction.commandName === 'viewticket' && interaction.member?.roles.cache.has(ROLE_STAFF_ID)) {
+      const ticketId = interaction.options.getString('ticketid');
+      const log = getTicketLog(ticketId);
+      if (!log) {
+        await interaction.reply({ content: `❌ No ticket found with ID: ${ticketId}`, ephemeral: true });
+        return;
+      }
+      // Create a paginated view of messages
+      const messagesPerPage = 20;
+      const totalPages = Math.ceil(log.messages.length / messagesPerPage);
+      let currentPage = 0;
+      
+      const generateMessageEmbed = (page) => {
+        const start = page * messagesPerPage;
+        const end = start + messagesPerPage;
+        const pageMessages = log.messages.slice(start, end);
+        const embed = new EmbedBuilder()
+          .setTitle(`📝 Ticket Log: ${log.ticketName}`)
+          .setDescription(`**Status:** ${log.status}\n**User:** <@${log.userId}>\n**Item:** ${log.item.name}\n**Price:** $${log.item.price}\n**Roblox User:** ${log.robloxUsername || 'Not provided'}\n**Created:** ${new Date(log.createdAt).toLocaleString()}\n**Closed:** ${new Date(log.closedAt).toLocaleString()}\n**Total Messages:** ${log.messages.length}`)
+          .setColor(0x0099FF);
+        
+        pageMessages.forEach(msg => {
+          embed.addFields({ name: `${msg.author}`, value: `${msg.content.substring(0, 100)}`, inline: false });
+        });
+        embed.setFooter({ text: `Page ${page + 1} of ${totalPages} | Ticket ID: ${log.ticketId}` });
+        return embed;
+      };
+      
+      const row = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder().setCustomId(`prev_page_${ticketId}_${currentPage}`).setLabel('◀ Previous').setStyle(ButtonStyle.Secondary).setDisabled(true),
+          new ButtonBuilder().setCustomId(`next_page_${ticketId}_${currentPage}`).setLabel('Next ▶').setStyle(ButtonStyle.Secondary).setDisabled(totalPages <= 1)
+        );
+      
+      await interaction.reply({ embeds: [generateMessageEmbed(0)], components: [row], ephemeral: true });
+    }
+    else if (interaction.commandName === 'mytickets') {
+      const userLogs = getUserTicketLogs(interaction.user.id);
+      if (userLogs.length === 0) {
+        await interaction.reply({ content: '📝 You have no past tickets.', ephemeral: true });
+        return;
+      }
+      const embed = new EmbedBuilder()
+        .setTitle('📝 Your Ticket History')
+        .setDescription(`You have ${userLogs.length} past ticket(s)`)
+        .setColor(0x0099FF);
+      userLogs.slice(0, 10).forEach(log => {
+        embed.addFields({ name: `${log.ticketName} (${log.status})`, value: `Item: ${log.item.name}\nClosed: ${new Date(log.closedAt).toLocaleString()}`, inline: false });
+      });
+      await interaction.reply({ embeds: [embed], ephemeral: true });
     }
   }
   
@@ -245,7 +331,41 @@ client.on('interactionCreate', async (interaction) => {
   else if (interaction.isButton()) {
     const customId = interaction.customId;
     
-    if (customId === 'back_to_stock' || customId === 'refresh_stock_view') {
+    // Handle pagination for ticket view
+    if (customId.startsWith('prev_page_') || customId.startsWith('next_page_')) {
+      const parts = customId.split('_');
+      const action = parts[0];
+      const ticketId = parts[2];
+      let currentPage = parseInt(parts[3]);
+      const log = getTicketLog(ticketId);
+      if (!log) return;
+      const messagesPerPage = 20;
+      const totalPages = Math.ceil(log.messages.length / messagesPerPage);
+      
+      if (action === 'prev_page') currentPage--;
+      if (action === 'next_page') currentPage++;
+      
+      const start = currentPage * messagesPerPage;
+      const end = start + messagesPerPage;
+      const pageMessages = log.messages.slice(start, end);
+      const embed = new EmbedBuilder()
+        .setTitle(`📝 Ticket Log: ${log.ticketName}`)
+        .setDescription(`**Status:** ${log.status}\n**User:** <@${log.userId}>\n**Item:** ${log.item.name}\n**Price:** $${log.item.price}\n**Created:** ${new Date(log.createdAt).toLocaleString()}\n**Closed:** ${new Date(log.closedAt).toLocaleString()}`)
+        .setColor(0x0099FF);
+      pageMessages.forEach(msg => {
+        embed.addFields({ name: `${msg.author}`, value: msg.content.substring(0, 100), inline: false });
+      });
+      embed.setFooter({ text: `Page ${currentPage + 1} of ${totalPages}` });
+      
+      const row = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder().setCustomId(`prev_page_${ticketId}_${currentPage}`).setLabel('◀ Previous').setStyle(ButtonStyle.Secondary).setDisabled(currentPage === 0),
+          new ButtonBuilder().setCustomId(`next_page_${ticketId}_${currentPage}`).setLabel('Next ▶').setStyle(ButtonStyle.Secondary).setDisabled(currentPage + 1 >= totalPages)
+        );
+      await interaction.update({ embeds: [embed], components: [row] });
+    }
+    
+    else if (customId === 'back_to_stock' || customId === 'refresh_stock_view') {
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('search_modal_button').setLabel('🔍 Search Stock').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('view_all_ephemeral').setLabel('📋 View All Items').setStyle(ButtonStyle.Secondary),
@@ -300,24 +420,18 @@ client.on('interactionCreate', async (interaction) => {
       await channel.send({ content: `<@${interaction.user.id}>`, embeds: [embed], components: [row] });
     }
     
-    // ========== FIXED: CANCEL BUTTON ==========
     else if (customId.startsWith('cancel_ticket_')) {
-      console.log(`🔴 Cancel button clicked: ${customId}`);
       const channelId = customId.replace('cancel_ticket_', '');
       const channel = interaction.guild.channels.cache.get(channelId);
       const ticketInfo = activeTickets.get(channelId);
-      
       await interaction.reply({ content: '❌ Cancelling ticket...', ephemeral: true });
-      
       if (channel && ticketInfo) {
         await closeTicket(channel, 'cancelled_by_user', ticketInfo);
       } else if (channel) {
         try {
           await channel.send('❌ **Ticket cancelled.** This channel will close in 3 seconds...');
           setTimeout(() => channel.delete().catch(() => {}), 3000);
-        } catch (err) { console.log('Error closing channel:', err); }
-      } else {
-        console.log(`Channel not found for ID: ${channelId}`);
+        } catch (err) {}
       }
     }
     
@@ -333,7 +447,7 @@ client.on('interactionCreate', async (interaction) => {
       const ticketInfo = activeTickets.get(interaction.channel.id);
       if (ticketInfo && ticketInfo.status === 'trade_sent') {
         ticketInfo.status = 'completed';
-        await interaction.reply({ content: '✅ **Thank you for confirming!** Your purchase is now complete. This ticket will close in 5 seconds.', ephemeral: true });
+        await interaction.reply({ content: '✅ **Thank you for confirming!** Your purchase is now complete.', ephemeral: true });
         const completeEmbed = new EmbedBuilder()
           .setTitle('🎉 Purchase Complete!')
           .setDescription(`Thank you for purchasing **${ticketInfo.item.name}**!\n\nEnjoy your item!`)
@@ -470,20 +584,28 @@ client.on('interactionCreate', async (interaction) => {
       if (freshTicket && freshTicket.status === 'trade_sent') {
         const reminderEmbed = new EmbedBuilder()
           .setTitle('🔔 REMINDER: Complete Your Trade')
-          .setDescription(`**Have you accepted the trade on Roblox yet?**\n\n➡️ **If YES:** Click the "I HAVE ACCEPTED THE TRADE ON ROBLOX" button above.\n\n➡️ **If NO:** Please check your Roblox trades inbox.\n\n**Still having issues?** Click the "REPORT ISSUE" button.`)
+          .setDescription(`**Have you accepted the trade on Roblox yet?**\n\n➡️ **If YES:** Click the "I HAVE ACCEPTED THE TRADE ON ROBLOX" button above.\n\n➡️ **If NO:** Please check your Roblox trades inbox.`)
           .setColor(0xFF6600);
         await interaction.channel.send({ content: `<@${interaction.user.id}>`, embeds: [reminderEmbed] });
       }
     }, 120000);
   }
   
+  // ========== FIXED: RETRY BUTTON - Now works properly ==========
   else if (customId.startsWith('retry_username_')) {
     const parts = customId.split('_');
     const itemId = parseInt(parts[3]);
     const item = stock.items.find(i => i.id === itemId);
+    
     await interaction.reply({ content: '🔄 Please type a different Roblox username.', ephemeral: true });
-    activeUsernameRequests.set(interaction.user.id, { channelId: interaction.channel.id, item: item });
-    await interaction.channel.send(`📝 **Please type your CORRECT Roblox username:**`);
+    
+    // Store the new pending request
+    activeUsernameRequests.set(interaction.user.id, { 
+      channelId: interaction.channel.id, 
+      item: item 
+    });
+    
+    await interaction.channel.send(`📝 **Please type your CORRECT Roblox username:**\n\n*Make sure to spell it exactly as it appears on Roblox.*`);
   }
   
   else if (customId.startsWith('report_issue_')) {
@@ -494,29 +616,3 @@ client.on('interactionCreate', async (interaction) => {
       .setTitle('🚨 Issue Reported!')
       .setDescription(`**User:** <@${interaction.user.id}>\n**Trade ID:** \`${tradeId}\`\n**Channel:** ${interaction.channel}`)
       .setColor(0xFF0000)
-      .setTimestamp();
-    staffChannel.send({ content: `<@&${ROLE_STAFF_ID}>`, embeds: [issueEmbed] });
-  }
-  
-  else if (customId.startsWith('cancel_ticket_')) {
-    console.log(`🔴 Cancel button clicked: ${customId}`);
-    const channelId = customId.replace('cancel_ticket_', '');
-    const channel = interaction.guild.channels.cache.get(channelId);
-    const ticketInfo = activeTickets.get(channelId);
-    
-    await interaction.reply({ content: '❌ Cancelling...', ephemeral: true });
-    
-    if (channel && ticketInfo) {
-      await closeTicket(channel, 'cancelled_by_user', ticketInfo);
-    } else if (channel) {
-      try {
-        await channel.send('❌ **Purchase cancelled.** Closing...');
-        setTimeout(() => channel.delete().catch(() => {}), 3000);
-      } catch (err) {}
-    }
-  }
-});
-
-client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with CANCEL BUTTON FIXED!');
-console.log('📝 Cancel buttons will now close tickets properly');
