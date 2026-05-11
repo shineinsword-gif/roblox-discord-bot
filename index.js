@@ -31,45 +31,56 @@ let stock = {
   ]
 };
 
-// Function to fetch item image from Roblox
+// ========== DIRECT ROBLOX IMAGE FETCHING ==========
 async function fetchRobloxItemImage(itemId) {
   try {
-    // Roblox Thumbnail API for items/assets
-    const url = `https://thumbnails.roblox.com/v1/assets?assetIds=${itemId}&size=150x150&format=Png&isCircular=false`;
-    const response = await axios.get(url, {
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
+    // Multiple working Roblox image endpoints
+    const endpoints = [
+      `https://www.roblox.com/asset-thumbnail/image?assetId=${itemId}&width=150&height=150&format=png`,
+      `https://thumbnails.roblox.com/v1/assets?assetIds=${itemId}&size=150x150&format=Png`,
+      `https://tr.rbxcdn.com/${itemId}/150/150/Image/Png`
+    ];
     
-    if (response.data?.data?.[0]?.imageUrl) {
-      return response.data.data[0].imageUrl;
+    for (const url of endpoints) {
+      try {
+        const response = await axios.get(url, {
+          timeout: 8000,
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+          validateStatus: (status) => status < 400
+        });
+        
+        if (response.data?.data?.[0]?.imageUrl) {
+          return response.data.data[0].imageUrl;
+        }
+        
+        // If it's a direct image URL that works
+        if (response.config.url && response.status === 200) {
+          return response.config.url;
+        }
+      } catch (e) {
+        continue;
+      }
     }
-    return null;
+    
+    // Fallback to Roblox's default thumbnail system
+    return `https://www.roblox.com/asset-thumbnail/image?assetId=${itemId}&width=150&height=150&format=png`;
   } catch (err) {
     console.log(`Could not fetch image for ${itemId}: ${err.message}`);
     return null;
   }
 }
 
-// Function to fetch user avatar from Roblox
+// Fetch user avatar directly from Roblox
 async function fetchRobloxUserAvatar(userId) {
   try {
-    const url = `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=420x420&format=Png&isCircular=false`;
-    const response = await axios.get(url, {
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-    
-    if (response.data?.data?.[0]?.imageUrl) {
-      return response.data.data[0].imageUrl;
-    }
-    return `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`;
+    const url = `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`;
+    return url;
   } catch (err) {
     return `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`;
   }
 }
 
-// Update all items with images on startup
+// Update all items with images
 async function updateAllItemImages() {
   console.log('🖼️ Fetching images for all stock items...');
   for (let item of stock.items) {
@@ -77,6 +88,8 @@ async function updateAllItemImages() {
     if (imageUrl) {
       item.imageUrl = imageUrl;
       console.log(`✅ Got image for ${item.name}`);
+    } else {
+      item.imageUrl = null;
     }
   }
   saveStock();
@@ -167,7 +180,6 @@ async function findRobloxUserDirect(username) {
       const user = exactMatch || response.data.data[0];
       console.log(`✅ Found: ${user.name} (${user.id})`);
       
-      // Fetch avatar
       const avatarUrl = await fetchRobloxUserAvatar(user.id);
       
       return {
@@ -183,23 +195,6 @@ async function findRobloxUserDirect(username) {
     
   } catch (error) {
     console.error(`❌ Roblox API Error:`, error.message);
-    
-    try {
-      const altUrl = `https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}`;
-      const altResponse = await axios.get(altUrl, { timeout: 10000 });
-      
-      if (altResponse.data && altResponse.data.Id) {
-        const avatarUrl = await fetchRobloxUserAvatar(altResponse.data.Id);
-        return {
-          id: altResponse.data.Id,
-          name: altResponse.data.Username,
-          displayName: altResponse.data.Username,
-          profileUrl: `https://www.roblox.com/users/${altResponse.data.Id}/profile`,
-          avatarUrl: avatarUrl
-        };
-      }
-    } catch (altError) {}
-    
     return null;
   }
 }
@@ -217,63 +212,46 @@ function searchStock(query) {
 // Store active requests
 const activeUsernameRequests = new Map();
 
-// ========== SILENT KEEP-ALIVE PING ==========
-// Pings the server every 4 minutes to keep it awake (nobody sees this)
-setInterval(async () => {
-  try {
-    // This is an internal ping - no external requests needed
-    console.log(`💓 Keep-alive ping at ${new Date().toLocaleTimeString()}`);
-    // Touch the stock file to keep activity
-    if (fs.existsSync('./stock.json')) {
-      const stats = fs.statSync('./stock.json');
-      // Just reading file keeps the bot "active"
-    }
-  } catch (err) {
-    // Silent fail
-  }
-}, 240000); // Every 4 minutes
+// Keep-alive ping (silent - only console log, no Discord messages)
+setInterval(() => {
+  console.log(`💓 Bot alive at ${new Date().toLocaleTimeString()}`);
+}, 240000);
 
-// Initialize express server for Render with auto-ping
+// Express server
 const express = require('express');
 const app = express();
-app.get('/', (req, res) => res.send('🤖 Discord Bot is Running! 🚀'));
-app.get('/ping', (req, res) => {
-  console.log('🏓 External ping received');
-  res.send('pong');
-});
+app.get('/', (req, res) => res.send('🤖 Discord Bot is Running!'));
 const port = process.env.PORT || 3000;
-const server = app.listen(port, () => console.log(`🌐 Web server on port ${port}`));
+app.listen(port, () => console.log(`🌐 Web server on port ${port}`));
 
-// Also ping ourselves internally every 4 minutes
-setInterval(() => {
-  try {
-    const http = require('http');
-    http.get(`http://localhost:${port}/ping`, () => {});
-  } catch (err) {}
-}, 240000);
+// Function to create the main stock embed (reusable)
+function createMainStockEmbed() {
+  const embed = new EmbedBuilder()
+    .setTitle('📦 Current Stock')
+    .setDescription('Use the buttons below to browse or search our inventory')
+    .setColor(0x0099FF);
+  
+  stock.items.forEach(item => {
+    embed.addFields({
+      name: `${item.name}`,
+      value: `💰 $${item.price} | 🆔 ID: ${item.id}`,
+      inline: true
+    });
+  });
+  
+  if (stock.items[0]?.imageUrl) {
+    embed.setThumbnail(stock.items[0].imageUrl);
+  }
+  
+  return embed;
+}
 
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isCommand()) {
     const { commandName, member, options } = interaction;
     
     if (commandName === 'stock') {
-      const embed = new EmbedBuilder()
-        .setTitle('📦 Current Stock')
-        .setDescription('Click a button below to browse or search')
-        .setColor(0x0099FF);
-      
-      stock.items.forEach(item => {
-        embed.addFields({
-          name: `${item.name}`,
-          value: `💰 $${item.price} | 🆔 ID: ${item.id}`,
-          inline: true
-        });
-      });
-      
-      // Set first item's image as thumbnail
-      if (stock.items[0]?.imageUrl) {
-        embed.setThumbnail(stock.items[0].imageUrl);
-      }
+      const embed = createMainStockEmbed();
       
       const row = new ActionRowBuilder()
         .addComponents(
@@ -282,8 +260,12 @@ client.on('interactionCreate', async (interaction) => {
             .setLabel('🔍 Search Stock')
             .setStyle(ButtonStyle.Primary),
           new ButtonBuilder()
-            .setCustomId('view_all_items')
+            .setCustomId('view_all_ephemeral')
             .setLabel('📋 View All Items')
+            .setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder()
+            .setCustomId('refresh_stock_view')
+            .setLabel('🔄 Refresh')
             .setStyle(ButtonStyle.Secondary)
         );
       
@@ -295,7 +277,6 @@ client.on('interactionCreate', async (interaction) => {
       const price = options.getNumber('price');
       const robloxItemId = options.getInteger('robloxitemid');
       
-      // Fetch image from Roblox
       const imageUrl = await fetchRobloxItemImage(robloxItemId);
       
       stock.items.push({
@@ -355,12 +336,12 @@ client.on('interactionCreate', async (interaction) => {
       
       const resultEmbed = new EmbedBuilder()
         .setTitle(`🔍 Search Results for "${query}"`)
-        .setDescription(`Found ${results.length} item(s) in stock`)
+        .setDescription(`Found ${results.length} item(s) in stock.\nClick a button below to purchase.`)
         .setColor(0x00FF00);
       
-      const buttons = new ActionRowBuilder();
+      const buttonRow = new ActionRowBuilder();
       
-      results.forEach(item => {
+      results.slice(0, 5).forEach(item => {
         resultEmbed.addFields({
           name: `${item.name}`,
           value: `💰 $${item.price} | 🆔 Stock ID: ${item.id}`,
@@ -371,44 +352,88 @@ client.on('interactionCreate', async (interaction) => {
           resultEmbed.setThumbnail(item.imageUrl);
         }
         
-        buttons.addComponents(
+        buttonRow.addComponents(
           new ButtonBuilder()
             .setCustomId(`purchase_${item.id}`)
-            .setLabel(`Buy ${item.name.length > 20 ? item.name.substring(0,20)+'...' : item.name}`)
+            .setLabel(`Buy ${item.name.substring(0, 20)}`)
             .setStyle(ButtonStyle.Primary)
         );
       });
       
-      await interaction.reply({ embeds: [resultEmbed], components: [buttons], ephemeral: true });
+      // Add a "Back to Stock" button
+      const backButton = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId('back_to_stock')
+            .setLabel('◀ Back to Stock')
+            .setStyle(ButtonStyle.Secondary)
+        );
+      
+      await interaction.reply({ 
+        embeds: [resultEmbed], 
+        components: [buttonRow, backButton],
+        ephemeral: true  // Only visible to the user who searched!
+      });
     }
   }
   
   else if (interaction.isButton()) {
     const customId = interaction.customId;
     
-    // SEARCH MODAL BUTTON - Opens popup
-    if (customId === 'search_modal_button') {
-      const modal = new ModalBuilder()
-        .setCustomId('search_modal')
-        .setTitle('🔍 Search Stock');
+    // BACK TO STOCK - Returns to original view
+    if (customId === 'back_to_stock') {
+      const embed = createMainStockEmbed();
       
-      const searchInput = new TextInputBuilder()
-        .setCustomId('search_query')
-        .setLabel('Enter item name or ID to search')
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder('Example: Gold Clockwork Shades or 110673146052704')
-        .setRequired(true);
+      const row = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId('search_modal_button')
+            .setLabel('🔍 Search Stock')
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId('view_all_ephemeral')
+            .setLabel('📋 View All Items')
+            .setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder()
+            .setCustomId('refresh_stock_view')
+            .setLabel('🔄 Refresh')
+            .setStyle(ButtonStyle.Secondary)
+        );
       
-      const actionRow = new ActionRowBuilder().addComponents(searchInput);
-      modal.addComponents(actionRow);
-      
-      await interaction.showModal(modal);
+      await interaction.update({ embeds: [embed], components: [row] });
     }
     
-    else if (customId === 'view_all_items') {
+    // REFRESH STOCK VIEW
+    else if (customId === 'refresh_stock_view') {
+      const embed = createMainStockEmbed();
+      
+      const row = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId('search_modal_button')
+            .setLabel('🔍 Search Stock')
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId('view_all_ephemeral')
+            .setLabel('📋 View All Items')
+            .setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder()
+            .setCustomId('refresh_stock_view')
+            .setLabel('🔄 Refresh')
+            .setStyle(ButtonStyle.Secondary)
+        );
+      
+      await interaction.update({ embeds: [embed], components: [row] });
+    }
+    
+    // VIEW ALL ITEMS - Ephemeral (only the user sees it)
+    else if (customId === 'view_all_ephemeral') {
       const embed = new EmbedBuilder()
         .setTitle('📦 Complete Stock List')
+        .setDescription(`Total items: ${stock.items.length}\nClick a button below to purchase.`)
         .setColor(0x0099FF);
+      
+      const buttons = new ActionRowBuilder();
       
       stock.items.forEach(item => {
         embed.addFields({
@@ -419,11 +444,8 @@ client.on('interactionCreate', async (interaction) => {
         if (item.imageUrl && !embed.data.thumbnail) {
           embed.setThumbnail(item.imageUrl);
         }
-      });
-      
-      const row = new ActionRowBuilder();
-      stock.items.slice(0, 5).forEach(item => {
-        row.addComponents(
+        
+        buttons.addComponents(
           new ButtonBuilder()
             .setCustomId(`purchase_${item.id}`)
             .setLabel(`Buy ${item.name.substring(0, 20)}`)
@@ -431,7 +453,38 @@ client.on('interactionCreate', async (interaction) => {
         );
       });
       
-      await interaction.update({ embeds: [embed], components: [row] });
+      const backButton = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId('back_to_stock')
+            .setLabel('◀ Back to Stock')
+            .setStyle(ButtonStyle.Secondary)
+        );
+      
+      await interaction.reply({ 
+        embeds: [embed], 
+        components: [buttons, backButton],
+        ephemeral: true  // Only visible to the user!
+      });
+    }
+    
+    // SEARCH MODAL BUTTON
+    else if (customId === 'search_modal_button') {
+      const modal = new ModalBuilder()
+        .setCustomId('search_modal')
+        .setTitle('🔍 Search Stock');
+      
+      const searchInput = new TextInputBuilder()
+        .setCustomId('search_query')
+        .setLabel('Enter item name or ID to search')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Example: Gold or 110673146052704')
+        .setRequired(true);
+      
+      const actionRow = new ActionRowBuilder().addComponents(searchInput);
+      modal.addComponents(actionRow);
+      
+      await interaction.showModal(modal);
     }
     
     else if (customId.startsWith('purchase_')) {
@@ -477,7 +530,6 @@ client.on('interactionCreate', async (interaction) => {
       await channel.send({ content: `<@${interaction.user.id}>`, embeds: [embed], components: [row] });
     }
     
-    // CANCEL TICKET - Closes the ticket
     else if (customId.startsWith('cancel_ticket_')) {
       const channelId = customId.split('_')[2];
       const channel = interaction.guild.channels.cache.get(channelId);
@@ -537,7 +589,6 @@ client.on('messageCreate', async (message) => {
     .setTitle('✅ Is this your Roblox profile?')
     .setDescription(`**Username:** ${robloxUser.name}\n**Display Name:** ${robloxUser.displayName}\n**User ID:** ${robloxUser.id}`)
     .addFields({ name: '🔗 Profile Link', value: robloxUser.profileUrl, inline: false })
-    .setThumbnail(robloxUser.avatarUrl)
     .setImage(robloxUser.avatarUrl)
     .setColor(0x00FF00);
   
@@ -583,7 +634,7 @@ client.on('interactionCreate', async (interaction) => {
       .addFields(
         { name: 'Item', value: item.name, inline: true },
         { name: 'Price', value: `$${item.price}`, inline: true },
-        { name: 'Roblox User', value: `<@${interaction.user.id}>`, inline: true },
+        { name: 'Roblox User ID', value: String(robloxUserId), inline: true },
         { name: 'Transaction ID', value: `\`${tradeId}\``, inline: false }
       )
       .setColor(0x00FF00);
@@ -593,7 +644,6 @@ client.on('interactionCreate', async (interaction) => {
     setTimeout(() => interaction.channel.delete().catch(() => {}), 10000);
   }
   
-  // RETRY BUTTON - Try a different username
   else if (customId.startsWith('retry_username_')) {
     const parts = customId.split('_');
     const itemId = parseInt(parts[3]);
@@ -606,7 +656,7 @@ client.on('interactionCreate', async (interaction) => {
       item: item
     });
     
-    await interaction.channel.send(`📝 **Please type your CORRECT Roblox username:**\n\n*Make sure to spell it exactly as it appears on Roblox.*`);
+    await interaction.channel.send(`📝 **Please type your CORRECT Roblox username:**`);
   }
   
   else if (customId.startsWith('cancel_ticket_')) {
@@ -623,4 +673,4 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with AUTO IMAGES, PROFILE PICS, RETRY BUTTON, and SILENT KEEP-ALIVE!');
+console.log('🚀 Bot starting with DIRECT ROBLOX IMAGES, EPHEMERAL VIEWS, and BACK BUTTON!');
