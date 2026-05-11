@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const axios = require('axios');
 const fs = require('fs');
 require('dotenv').config();
@@ -14,19 +14,22 @@ let stock = {
       id: 1, 
       name: "Rainbow Phoenix", 
       price: 25, 
-      robloxItemId: 101
+      robloxItemId: 101,
+      imageUrl: "https://tr.rbxcdn.com/30DAY-AvatarHeadshot-101.png"
     },
     { 
       id: 2, 
       name: "Golden Dragon", 
       price: 50, 
-      robloxItemId: 102
+      robloxItemId: 102,
+      imageUrl: "https://tr.rbxcdn.com/30DAY-AvatarHeadshot-102.png"
     },
     { 
       id: 3, 
       name: "Gold Clockwork Shades", 
       price: 75, 
-      robloxItemId: 110673146052704
+      robloxItemId: 110673146052704,
+      imageUrl: "https://tr.rbxcdn.com/30DAY-AvatarHeadshot-110673146052704.png"
     }
   ]
 };
@@ -60,7 +63,8 @@ client.once('ready', async () => {
         options: [
           { name: 'name', type: 3, description: 'Item name', required: true },
           { name: 'price', type: 10, description: 'Price in USD', required: true },
-          { name: 'robloxitemid', type: 4, description: 'Roblox Item ID', required: true }
+          { name: 'robloxitemid', type: 4, description: 'Roblox Item ID', required: true },
+          { name: 'imageurl', type: 3, description: 'Image URL (optional)', required: false }
         ]
       },
       { 
@@ -75,10 +79,10 @@ client.once('ready', async () => {
   }
 });
 
-// ========== ROBLOX USER LOOKUP ==========
+// Roblox user lookup
 async function findRobloxUserDirect(username) {
   try {
-    console.log(`🔍 Attempting to find Roblox user: ${username}`);
+    console.log(`🔍 Looking up: ${username}`);
     
     const searchUrl = `https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=10`;
     
@@ -86,8 +90,7 @@ async function findRobloxUserDirect(username) {
       timeout: 15000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json',
-        'Accept-Language': 'en-US,en;q=0.9'
+        'Accept': 'application/json'
       }
     });
     
@@ -96,7 +99,7 @@ async function findRobloxUserDirect(username) {
         user.name.toLowerCase() === username.toLowerCase()
       );
       const user = exactMatch || response.data.data[0];
-      console.log(`✅ Found user: ${user.name} (ID: ${user.id})`);
+      console.log(`✅ Found: ${user.name} (${user.id})`);
       
       return {
         id: user.id,
@@ -111,7 +114,6 @@ async function findRobloxUserDirect(username) {
   } catch (error) {
     console.error(`❌ Roblox API Error:`, error.message);
     
-    // Fallback method
     try {
       const altUrl = `https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}`;
       const altResponse = await axios.get(altUrl, { timeout: 10000 });
@@ -142,6 +144,7 @@ function searchStock(query) {
 
 // Store active requests
 const activeUsernameRequests = new Map();
+let activeTicketChannels = new Map();
 
 // Initialize express server for Render
 const express = require('express');
@@ -157,27 +160,31 @@ client.on('interactionCreate', async (interaction) => {
     if (commandName === 'stock') {
       const embed = new EmbedBuilder()
         .setTitle('📦 Current Stock')
-        .setDescription('Click the 🔍 button below to search for specific items')
+        .setDescription('Click a button below to browse or search')
         .setColor(0x0099FF);
       
-      stock.items.slice(0, 5).forEach(item => {
+      // Add items with images
+      stock.items.forEach(item => {
         embed.addFields({
           name: `${item.name}`,
           value: `💰 $${item.price} | 🆔 ID: ${item.id}`,
           inline: true
         });
+        if (item.imageUrl && !embed.data.thumbnail) {
+          embed.setThumbnail(item.imageUrl);
+        }
       });
       
       const row = new ActionRowBuilder()
         .addComponents(
           new ButtonBuilder()
-            .setCustomId('search_button')
+            .setCustomId('search_modal_button')
             .setLabel('🔍 Search Stock')
-            .setStyle(ButtonStyle.Secondary),
+            .setStyle(ButtonStyle.Primary),
           new ButtonBuilder()
-            .setCustomId('view_all')
+            .setCustomId('view_all_items')
             .setLabel('📋 View All Items')
-            .setStyle(ButtonStyle.Primary)
+            .setStyle(ButtonStyle.Secondary)
         );
       
       await interaction.reply({ embeds: [embed], components: [row] });
@@ -187,16 +194,28 @@ client.on('interactionCreate', async (interaction) => {
       const name = options.getString('name');
       const price = options.getNumber('price');
       const robloxItemId = options.getInteger('robloxitemid');
+      const imageUrl = options.getString('imageurl') || `https://tr.rbxcdn.com/30DAY-AvatarHeadshot-${robloxItemId}.png`;
       
       stock.items.push({
         id: stock.items.length + 1,
         name: name,
         price: price,
-        robloxItemId: robloxItemId
+        robloxItemId: robloxItemId,
+        imageUrl: imageUrl
       });
       saveStock();
       
-      await interaction.reply(`✅ Added **${name}** for $${price}. Roblox ID: ${robloxItemId}`);
+      const embed = new EmbedBuilder()
+        .setTitle(`✅ Added to Stock!`)
+        .setDescription(`**${name}** for $${price}`)
+        .setThumbnail(imageUrl)
+        .addFields(
+          { name: 'Roblox Item ID', value: String(robloxItemId), inline: true },
+          { name: 'Stock ID', value: String(stock.items.length), inline: true }
+        )
+        .setColor(0x00FF00);
+      
+      await interaction.reply({ embeds: [embed] });
     }
     
     else if (commandName === 'removestock' && member?.roles.cache.has(ROLE_STAFF_ID)) {
@@ -212,73 +231,73 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
   
+  // Handle MODAL submit (popup search)
+  else if (interaction.isModalSubmit()) {
+    if (interaction.customId === 'search_modal') {
+      const query = interaction.fields.getTextInputValue('search_query');
+      const results = searchStock(query);
+      
+      if (results.length === 0) {
+        await interaction.reply({
+          content: `❌ No items found matching **"${query}"** in stock.`,
+          ephemeral: true
+        });
+        return;
+      }
+      
+      const resultEmbed = new EmbedBuilder()
+        .setTitle(`🔍 Search Results for "${query}"`)
+        .setDescription(`Found ${results.length} item(s) in stock`)
+        .setColor(0x00FF00);
+      
+      const buttons = new ActionRowBuilder();
+      
+      results.forEach(item => {
+        resultEmbed.addFields({
+          name: `${item.name}`,
+          value: `💰 $$${item.price} | 🆔 Stock ID: ${item.id}`,
+          inline: false
+        });
+        
+        if (item.imageUrl && !resultEmbed.data.thumbnail) {
+          resultEmbed.setThumbnail(item.imageUrl);
+        }
+        
+        buttons.addComponents(
+          new ButtonBuilder()
+            .setCustomId(`purchase_${item.id}`)
+            .setLabel(`Buy ${item.name.length > 20 ? item.name.substring(0,20)+'...' : item.name}`)
+            .setStyle(ButtonStyle.Primary)
+        );
+      });
+      
+      await interaction.reply({ embeds: [resultEmbed], components: [buttons], ephemeral: true });
+    }
+  }
+  
   else if (interaction.isButton()) {
     const customId = interaction.customId;
     
-    // SEARCH BUTTON - Ephemeral message (only visible to the user who clicked)
-    if (customId === 'search_button') {
-      // Send ephemeral prompt - only the user sees this
-      await interaction.reply({
-        content: '🔍 **What would you like to search for?**\n\nType the item name or ID you want to find in stock.\nExample: `Gold` or `110673146052704`',
-        ephemeral: true
-      });
+    // SEARCH MODAL BUTTON - Opens popup
+    if (customId === 'search_modal_button') {
+      const modal = new ModalBuilder()
+        .setCustomId('search_modal')
+        .setTitle('🔍 Search Stock');
       
-      // Create a message collector in the same channel, but only for this user
-      const filter = m => m.author.id === interaction.user.id && m.channel.id === interaction.channel.id;
-      const collector = interaction.channel.createMessageCollector({ filter, max: 1, time: 30000 });
+      const searchInput = new TextInputBuilder()
+        .setCustomId('search_query')
+        .setLabel('Enter item name or ID to search')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Example: Gold Clockwork Shades or 110673146052704')
+        .setRequired(true);
       
-      collector.on('collect', async (msg) => {
-        const query = msg.content.trim();
-        const results = searchStock(query);
-        
-        // Delete the user's search message to keep chat clean
-        await msg.delete().catch(() => {});
-        
-        if (results.length === 0) {
-          await interaction.followUp({
-            content: `❌ No items found matching **"${query}"** in stock.\n\nUse \`/stock\` to see all available items.`,
-            ephemeral: true
-          });
-          return;
-        }
-        
-        const resultEmbed = new EmbedBuilder()
-          .setTitle(`🔍 Search Results for "${query}"`)
-          .setDescription(`Found ${results.length} item(s) in stock`)
-          .setColor(0x00FF00);
-        
-        const buttons = new ActionRowBuilder();
-        
-        results.slice(0, 5).forEach(item => {
-          resultEmbed.addFields({
-            name: `${item.name}`,
-            value: `💰 $${item.price} | 🆔 Stock ID: ${item.id}`,
-            inline: false
-          });
-          
-          buttons.addComponents(
-            new ButtonBuilder()
-              .setCustomId(`purchase_${item.id}`)
-              .setLabel(`Buy ${item.name.length > 20 ? item.name.substring(0,20)+'...' : item.name}`)
-              .setStyle(ButtonStyle.Primary)
-          );
-        });
-        
-        // Send results as ephemeral - only the user sees them!
-        await interaction.followUp({ embeds: [resultEmbed], components: [buttons], ephemeral: true });
-      });
+      const actionRow = new ActionRowBuilder().addComponents(searchInput);
+      modal.addComponents(actionRow);
       
-      collector.on('end', (collected) => {
-        if (collected.size === 0) {
-          interaction.followUp({
-            content: '⏰ Search timed out. Use `/stock` to try again.',
-            ephemeral: true
-          }).catch(() => {});
-        }
-      });
+      await interaction.showModal(modal);
     }
     
-    else if (customId === 'view_all') {
+    else if (customId === 'view_all_items') {
       const embed = new EmbedBuilder()
         .setTitle('📦 Complete Stock List')
         .setColor(0x0099FF);
@@ -289,6 +308,9 @@ client.on('interactionCreate', async (interaction) => {
           value: `💰 $${item.price} | 🎮 Roblox ID: ${item.robloxItemId}`,
           inline: false
         });
+        if (item.imageUrl && !embed.data.thumbnail) {
+          embed.setThumbnail(item.imageUrl);
+        }
       });
       
       const row = new ActionRowBuilder();
@@ -314,7 +336,7 @@ client.on('interactionCreate', async (interaction) => {
       
       await interaction.reply({ content: 'Creating ticket...', ephemeral: true });
       
-      const ticketName = `ticket-${interaction.user.username}-${Date.now()}`;
+      const ticketName = `ticket-${interaction.user.username}`;
       const channel = await interaction.guild.channels.create({
         name: ticketName,
         type: ChannelType.GuildText,
@@ -326,30 +348,55 @@ client.on('interactionCreate', async (interaction) => {
         ]
       });
       
-      const sessionId = `${Date.now()}_${interaction.user.id}`;
+      // Store ticket channel for cleanup
+      activeTicketChannels.set(channel.id, { userId: interaction.user.id, itemId: item.id });
       
       const embed = new EmbedBuilder()
         .setTitle(`🛒 Purchase: ${item.name}`)
-        .setDescription(`Price: **$${item.price}**\n\n**Step 1:** Type your Roblox username below\n**Step 2:** Confirm your profile\n**Step 3:** Receive your item!`)
+        .setDescription(`Price: **$${item.price}**`)
+        .setThumbnail(item.imageUrl || null)
         .setColor(0x00FF00);
       
-      await channel.send({ content: `<@${interaction.user.id}>`, embeds: [embed] });
+      const row = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(`request_username_${item.id}`)
+            .setLabel('💰 Continue to Purchase')
+            .setStyle(ButtonStyle.Success),
+          new ButtonBuilder()
+            .setCustomId(`cancel_ticket_${channel.id}`)
+            .setLabel('❌ Cancel')
+            .setStyle(ButtonStyle.Danger)
+        );
       
-      activeUsernameRequests.set(interaction.user.id, {
-        channelId: channel.id,
-        item: item,
-        sessionId: sessionId
-      });
-      
-      await channel.send(`📝 **Please type your EXACT Roblox username:**\n\nExample: \`Builderman\``);
+      await channel.send({ content: `<@${interaction.user.id}>`, embeds: [embed], components: [row] });
     }
     
-    else if (customId.startsWith('cancel_')) {
-      if (interaction.channel) {
-        await interaction.channel.send('❌ **Purchase cancelled.**');
-        await interaction.reply({ content: 'Cancelled.', ephemeral: true });
-        setTimeout(() => interaction.channel.delete(), 5000);
+    // CANCEL TICKET - Closes the ticket
+    else if (customId.startsWith('cancel_ticket_')) {
+      const channelId = customId.split('_')[2];
+      const channel = interaction.guild.channels.cache.get(channelId);
+      
+      await interaction.reply({ content: '❌ Cancelling ticket...', ephemeral: true });
+      
+      if (channel) {
+        await channel.send('❌ **Ticket cancelled by user.** This channel will close in 3 seconds...');
+        setTimeout(() => channel.delete().catch(() => {}), 3000);
       }
+    }
+    
+    else if (customId.startsWith('request_username_')) {
+      const itemId = parseInt(customId.split('_')[2]);
+      const item = stock.items.find(i => i.id === itemId);
+      
+      await interaction.reply({ content: '✅ Ready! **Type your Roblox username below**', ephemeral: false });
+      
+      activeUsernameRequests.set(interaction.user.id, {
+        channelId: interaction.channel.id,
+        item: item
+      });
+      
+      await interaction.channel.send(`📝 **Please type your EXACT Roblox username:**\n\nExample: \`Builderman\``);
     }
   }
 });
@@ -395,8 +442,8 @@ client.on('messageCreate', async (message) => {
         .setLabel('✅ Yes, That\'s Me')
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
-        .setCustomId(`retry_username_${item.id}`)
-        .setLabel('🔄 No, Wrong User')
+        .setCustomId(`cancel_ticket_${message.channel.id}`)
+        .setLabel('❌ Cancel')
         .setStyle(ButtonStyle.Danger)
     );
   
@@ -419,26 +466,23 @@ client.on('interactionCreate', async (interaction) => {
     
     const tradeId = `trade_${Date.now()}_${robloxUserId}`;
     
-    await interaction.channel.send(`✅ **Purchase Complete!**\n\n📦 Item: ${item.name}\n👤 Roblox User ID: ${robloxUserId}\n🆔 Transaction ID: \`${tradeId}\`\n\nThis ticket will close in 10 seconds.`);
+    await interaction.channel.send(`✅ **Purchase Complete!**\n\n📦 Item: ${item.name}\n👤 Roblox User: <@${interaction.user.id}>\n🆔 Transaction ID: \`${tradeId}\`\n\nThis ticket will close in 10 seconds.`);
     
-    setTimeout(() => interaction.channel.delete(), 10000);
+    setTimeout(() => interaction.channel.delete().catch(() => {}), 10000);
   }
   
-  else if (customId.startsWith('retry_username_')) {
-    const parts = customId.split('_');
-    const itemId = parseInt(parts[3]);
-    const item = stock.items.find(i => i.id === itemId);
+  else if (customId.startsWith('cancel_ticket_')) {
+    const channelId = customId.split('_')[2];
+    const channel = interaction.guild.channels.cache.get(channelId);
     
-    await interaction.reply({ content: '🔄 Please type your username again.', ephemeral: true });
+    await interaction.reply({ content: '❌ Cancelling...', ephemeral: true });
     
-    activeUsernameRequests.set(interaction.user.id, {
-      channelId: interaction.channel.id,
-      item: item
-    });
-    
-    await interaction.channel.send(`📝 **Please type your Roblox username again:**`);
+    if (channel) {
+      await channel.send('❌ **Purchase cancelled.** This channel will close in 3 seconds...');
+      setTimeout(() => channel.delete().catch(() => {}), 3000);
+    }
   }
 });
 
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with EPHEMERAL search (only you can see results)!');
+console.log('🚀 Bot starting with MODAL POPUP search, FIXED buttons, and IMAGES!');
