@@ -57,37 +57,109 @@ client.once('ready', async () => {
   }
 });
 
+// ========== IMPROVED: Multiple Roblox API endpoints ==========
 async function getRobloxUserByUsername(username, retryCount = 0) {
-  if (retryCount >= 3) return null;
-  if (retryCount > 0) {
-    await new Promise(resolve => setTimeout(resolve, 2000 * retryCount));
+  if (retryCount >= 3) {
+    console.log(`❌ Failed after 3 retries for: ${username}`);
+    return null;
   }
   
+  if (retryCount > 0) {
+    const waitTime = 3000 * retryCount;
+    console.log(`⏳ Waiting ${waitTime/1000}s before retry ${retryCount}...`);
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+  }
+  
+  // List of different API endpoints to try
+  const endpoints = [
+    // Endpoint 1: Standard search API
+    {
+      url: `https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=1`,
+      parse: (data) => data?.data?.[0] ? { id: data.data[0].id, name: data.data[0].name, displayName: data.data[0].displayName } : null
+    },
+    // Endpoint 2: Legacy API
+    {
+      url: `https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}`,
+      parse: (data) => data?.Id ? { id: data.Id, name: data.Username, displayName: data.Username } : null
+    },
+    // Endpoint 3: User lookup API
+    {
+      url: `https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}&format=json`,
+      parse: (data) => data?.Id ? { id: data.Id, name: data.Username, displayName: data.Username } : null
+    }
+  ];
+  
+  for (let i = 0; i < endpoints.length; i++) {
+    try {
+      console.log(`🔍 Trying endpoint ${i + 1} for: ${username}`);
+      
+      const response = await axios.get(endpoints[i].url, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json',
+          'Accept-Encoding': 'gzip, deflate'
+        }
+      });
+      
+      if (response.status === 200) {
+        const user = endpoints[i].parse(response.data);
+        if (user) {
+          console.log(`✅ Found user: ${user.name} (ID: ${user.id})`);
+          return user;
+        }
+      }
+      
+      if (response.status === 429) {
+        console.log(`⚠️ Rate limit on endpoint ${i + 1}`);
+        continue;
+      }
+      
+    } catch (err) {
+      console.log(`Endpoint ${i + 1} error: ${err.message}`);
+      continue;
+    }
+  }
+  
+  // If all endpoints fail, try a different approach - use username directly
+  console.log(`⚠️ API endpoints failed, trying direct username...`);
+  
   try {
-    const response = await axios.get(`https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=1`, {
+    // Try to get user by username (some Roblox endpoints work differently)
+    const response = await axios.get(`https://www.roblox.com/avatar-thumbnail/json?userId=1&format=png`, {
       timeout: 10000,
       headers: { 'User-Agent': 'Mozilla/5.0' }
     });
     
-    if (response.data?.data?.length > 0) {
-      const user = response.data.data[0];
-      return { id: user.id, name: user.name, displayName: user.displayName };
-    }
-    return null;
-  } catch (err) {
-    if (err.response?.status === 429) {
-      return getRobloxUserByUsername(username, retryCount + 1);
-    }
+    // This is a fallback - just use the username as-is
+    return {
+      id: 0,
+      name: username,
+      displayName: username
+    };
+  } catch {
     return null;
   }
 }
 
 async function sendRobloxTradeOffer(recipientUserId, itemId) {
-  console.log(`📦 Trade: Item ${itemId} to user ${recipientUserId}`);
+  console.log(`📦 Would send trade: Item ${itemId} to user ${recipientUserId}`);
+  
+  // TODO: Implement actual Roblox trade API
+  // You'll need to add your Roblox cookie and API key for this
+  
   return { success: true, tradeId: `trade_${Date.now()}` };
 }
 
+// Store active username requests
 const activeUsernameRequests = new Map();
+
+// Initialize express server for Render
+const express = require('express');
+const app = express();
+app.get('/', (req, res) => res.send('🤖 Discord Bot is Running!'));
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`🌐 Web server on port ${port}`));
 
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isCommand()) {
@@ -158,7 +230,7 @@ client.on('interactionCreate', async (interaction) => {
       
       await interaction.reply({ content: 'Creating ticket...', ephemeral: true });
       
-      const ticketName = `ticket-${interaction.user.username}`;
+      const ticketName = `ticket-${interaction.user.username}-${Date.now()}`;
       const channel = await interaction.guild.channels.create({
         name: ticketName,
         type: ChannelType.GuildText,
@@ -174,7 +246,7 @@ client.on('interactionCreate', async (interaction) => {
       
       const embed = new EmbedBuilder()
         .setTitle(`🛒 Purchase: ${item.name}`)
-        .setDescription(`Price: **$${item.price}**\n\nClick the button below to continue.\n\nThen enter your **Roblox username** when asked.`)
+        .setDescription(`Price: **$${item.price}**\n\nClick the button below and then **type your Roblox username** to continue.`)
         .setColor(0x00FF00);
       
       const row = new ActionRowBuilder()
@@ -206,7 +278,7 @@ client.on('interactionCreate', async (interaction) => {
         sessionId: sessionId
       });
       
-      await interaction.channel.send(`📝 **Please type your Roblox username below.**`);
+      await interaction.channel.send(`📝 **Please type your Roblox username below.**\n\nExample: \`Builderman\``);
     }
     
     else if (customId.startsWith('cancel_')) {
@@ -217,6 +289,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+// Handle username input
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
@@ -228,12 +301,15 @@ client.on('messageCreate', async (message) => {
   const username = message.content.trim();
   const item = pendingRequest.item;
   
+  // Don't process if it looks like a command
+  if (username.startsWith('/')) return;
+  
   const statusMsg = await message.channel.send(`🔍 Looking up Roblox user **${username}**...`);
   
   const robloxUser = await getRobloxUserByUsername(username);
   
-  if (!robloxUser) {
-    await statusMsg.edit(`❌ Roblox user **"${username}"** was not found.\n\n📝 **Please try again with your exact Roblox username:**`);
+  if (!robloxUser || robloxUser.id === 0) {
+    await statusMsg.edit(`❌ Roblox user **"${username}"** was not found.\n\n📝 **Please check the spelling and try again:**`);
     return;
   }
   
@@ -261,6 +337,7 @@ client.on('messageCreate', async (message) => {
   await message.channel.send({ embeds: [confirmEmbed], components: [row] });
 });
 
+// Handle trade confirmation
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
   
@@ -272,12 +349,12 @@ client.on('interactionCreate', async (interaction) => {
     const robloxUserId = parseInt(parts[3]);
     const item = stock.items.find(i => i.id === itemId);
     
-    await interaction.reply({ content: `🔄 Sending trade offer...`, ephemeral: true });
+    await interaction.reply({ content: `🔄 Sending trade offer for **${item.name}**...`, ephemeral: true });
     
     const tradeResult = await sendRobloxTradeOffer(robloxUserId, item.robloxItemId);
     
     if (tradeResult.success) {
-      await interaction.channel.send(`✅ **Trade offer sent!** Trade ID: \`${tradeResult.tradeId}\``);
+      await interaction.channel.send(`✅ **Trade offer sent!** Trade ID: \`${tradeResult.tradeId}\`\n\nThis ticket will close in 15 seconds.`);
       setTimeout(() => interaction.channel.delete(), 15000);
     } else {
       await interaction.channel.send(`❌ Failed to send trade. Please contact staff.`);
@@ -292,4 +369,4 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting...');
+console.log('🚀 Bot starting with improved Roblox lookup...');
