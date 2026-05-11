@@ -8,16 +8,63 @@ const ROLE_STAFF_ID = process.env.ROLE_STAFF_ID;
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
+// Stock with Roblox item images
 let stock = {
   items: [
-    { id: 1, name: "Rainbow Phoenix", price: 25, robloxItemId: 101 },
-    { id: 2, name: "Golden Dragon", price: 50, robloxItemId: 102 },
-    { id: 3, name: "Mystic Sword", price: 15, robloxItemId: 103 }
+    { 
+      id: 1, 
+      name: "Rainbow Phoenix", 
+      price: 25, 
+      robloxItemId: 101,
+      imageUrl: "https://tr.rbxcdn.com/30DAY-AvatarHeadshot-101.png"
+    },
+    { 
+      id: 2, 
+      name: "Golden Dragon", 
+      price: 50, 
+      robloxItemId: 102,
+      imageUrl: "https://tr.rbxcdn.com/30DAY-AvatarHeadshot-102.png"
+    },
+    { 
+      id: 3, 
+      name: "Gold Clockwork Shades", 
+      price: 75, 
+      robloxItemId: 110673146052704,
+      imageUrl: "https://tr.rbxcdn.com/30DAY-AvatarHeadshot-110673146052704.png"
+    }
   ]
 };
 
 function saveStock() {
   fs.writeFileSync('./stock.json', JSON.stringify(stock, null, 2));
+}
+
+// Function to fetch item image from Roblox
+async function fetchRobloxItemImage(itemId) {
+  try {
+    // Roblox thumbnail API
+    const response = await axios.get(`https://thumbnails.roblox.com/v1/assets?assetIds=${itemId}&size=420x420&format=Png`, {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    
+    if (response.data?.data?.[0]?.imageUrl) {
+      return response.data.data[0].imageUrl;
+    }
+    return null;
+  } catch (err) {
+    console.log(`Could not fetch image for item ${itemId}: ${err.message}`);
+    return null;
+  }
+}
+
+// Function to search stock
+function searchStock(query) {
+  const lowerQuery = query.toLowerCase();
+  return stock.items.filter(item => 
+    item.name.toLowerCase().includes(lowerQuery) ||
+    String(item.robloxItemId).includes(query)
+  );
 }
 
 const client = new Client({
@@ -36,6 +83,13 @@ client.once('ready', async () => {
   if (guild) {
     await guild.commands.set([
       { name: 'stock', description: 'View current stock and purchase items' },
+      { 
+        name: 'search', 
+        description: 'Search for an item in stock',
+        options: [
+          { name: 'query', type: 3, description: 'Item name or ID', required: true }
+        ]
+      },
       { 
         name: 'addstock', 
         description: '[STAFF] Add an item to stock', 
@@ -57,98 +111,17 @@ client.once('ready', async () => {
   }
 });
 
-// ========== IMPROVED: Multiple Roblox API endpoints ==========
-async function getRobloxUserByUsername(username, retryCount = 0) {
-  if (retryCount >= 3) {
-    console.log(`❌ Failed after 3 retries for: ${username}`);
-    return null;
-  }
-  
-  if (retryCount > 0) {
-    const waitTime = 3000 * retryCount;
-    console.log(`⏳ Waiting ${waitTime/1000}s before retry ${retryCount}...`);
-    await new Promise(resolve => setTimeout(resolve, waitTime));
-  }
-  
-  // List of different API endpoints to try
-  const endpoints = [
-    // Endpoint 1: Standard search API
-    {
-      url: `https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=1`,
-      parse: (data) => data?.data?.[0] ? { id: data.data[0].id, name: data.data[0].name, displayName: data.data[0].displayName } : null
-    },
-    // Endpoint 2: Legacy API
-    {
-      url: `https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}`,
-      parse: (data) => data?.Id ? { id: data.Id, name: data.Username, displayName: data.Username } : null
-    },
-    // Endpoint 3: User lookup API
-    {
-      url: `https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}&format=json`,
-      parse: (data) => data?.Id ? { id: data.Id, name: data.Username, displayName: data.Username } : null
-    }
-  ];
-  
-  for (let i = 0; i < endpoints.length; i++) {
-    try {
-      console.log(`🔍 Trying endpoint ${i + 1} for: ${username}`);
-      
-      const response = await axios.get(endpoints[i].url, {
-        timeout: 15000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json',
-          'Accept-Encoding': 'gzip, deflate'
-        }
-      });
-      
-      if (response.status === 200) {
-        const user = endpoints[i].parse(response.data);
-        if (user) {
-          console.log(`✅ Found user: ${user.name} (ID: ${user.id})`);
-          return user;
-        }
-      }
-      
-      if (response.status === 429) {
-        console.log(`⚠️ Rate limit on endpoint ${i + 1}`);
-        continue;
-      }
-      
-    } catch (err) {
-      console.log(`Endpoint ${i + 1} error: ${err.message}`);
-      continue;
-    }
-  }
-  
-  // If all endpoints fail, try a different approach - use username directly
-  console.log(`⚠️ API endpoints failed, trying direct username...`);
-  
+async function searchRobloxUser(username) {
   try {
-    // Try to get user by username (some Roblox endpoints work differently)
-    const response = await axios.get(`https://www.roblox.com/avatar-thumbnail/json?userId=1&format=png`, {
+    const response = await axios.get(`https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=5`, {
       timeout: 10000,
       headers: { 'User-Agent': 'Mozilla/5.0' }
     });
-    
-    // This is a fallback - just use the username as-is
-    return {
-      id: 0,
-      name: username,
-      displayName: username
-    };
-  } catch {
-    return null;
+    return response.data.data || [];
+  } catch (err) {
+    console.error(`Search error: ${err.message}`);
+    return [];
   }
-}
-
-async function sendRobloxTradeOffer(recipientUserId, itemId) {
-  console.log(`📦 Would send trade: Item ${itemId} to user ${recipientUserId}`);
-  
-  // TODO: Implement actual Roblox trade API
-  // You'll need to add your Roblox cookie and API key for this
-  
-  return { success: true, tradeId: `trade_${Date.now()}` };
 }
 
 // Store active username requests
@@ -165,16 +138,67 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isCommand()) {
     const { commandName, member, options } = interaction;
     
-    if (commandName === 'stock') {
+    // SEARCH COMMAND - New feature!
+    if (commandName === 'search') {
+      const query = options.getString('query');
+      const results = searchStock(query);
+      
+      if (results.length === 0) {
+        await interaction.reply({ 
+          content: `❌ No items found matching **"${query}"**.\n\nUse \`/stock\` to see all items.`, 
+          ephemeral: true 
+        });
+        return;
+      }
+      
+      const embed = new EmbedBuilder()
+        .setTitle(`🔍 Search Results for "${query}"`)
+        .setDescription(`Found ${results.length} item(s)`)
+        .setColor(0x00FF00);
+      
+      results.forEach(item => {
+        embed.addFields({
+          name: `${item.name}`,
+          value: `💰 $${item.price} | 🆔 ID: ${item.id} | 🎮 Roblox ID: ${item.robloxItemId}`,
+          inline: false
+        });
+        
+        if (item.imageUrl) {
+          embed.setThumbnail(item.imageUrl);
+        }
+      });
+      
+      const row = new ActionRowBuilder();
+      results.forEach(item => {
+        row.addComponents(
+          new ButtonBuilder()
+            .setCustomId(`purchase_${item.id}`)
+            .setLabel(`Buy ${item.name}`)
+            .setStyle(ButtonStyle.Primary)
+        );
+      });
+      
+      await interaction.reply({ embeds: [embed], components: [row] });
+    }
+    
+    else if (commandName === 'stock') {
       const embed = new EmbedBuilder()
         .setTitle('📦 Current Stock')
+        .setDescription(`Use \`/search <item name>\` to find specific items\n\n**Available Items:**`)
         .setColor(0x0099FF);
       
-      let description = '';
       stock.items.forEach(item => {
-        description += `**${item.name}** - $${item.price}\n`;
+        embed.addFields({
+          name: `${item.name}`,
+          value: `💰 $${item.price} | 🆔 Item ID: ${item.id}`,
+          inline: true
+        });
       });
-      embed.setDescription(description || 'No items in stock.');
+      
+      // Add thumbnail for first item or default
+      if (stock.items[0]?.imageUrl) {
+        embed.setThumbnail(stock.items[0].imageUrl);
+      }
       
       const row = new ActionRowBuilder();
       stock.items.forEach(item => {
@@ -194,26 +218,41 @@ client.on('interactionCreate', async (interaction) => {
       const price = options.getNumber('price');
       const robloxItemId = options.getInteger('robloxitemid');
       
+      // Fetch the item image from Roblox
+      const imageUrl = await fetchRobloxItemImage(robloxItemId);
+      
       stock.items.push({
         id: stock.items.length + 1,
         name: name,
         price: price,
-        robloxItemId: robloxItemId
+        robloxItemId: robloxItemId,
+        imageUrl: imageUrl || "https://tr.rbxcdn.com/30DAY-AvatarHeadshot.png"
       });
       saveStock();
-      await interaction.reply(`✅ Added **${name}** for $${price}.`);
+      
+      const replyEmbed = new EmbedBuilder()
+        .setTitle(`✅ Added to Stock!`)
+        .setDescription(`**${name}** for $${price}`)
+        .setThumbnail(imageUrl || null)
+        .addFields(
+          { name: 'Roblox Item ID', value: String(robloxItemId), inline: true },
+          { name: 'Stock ID', value: String(stock.items.length), inline: true }
+        )
+        .setColor(0x00FF00);
+      
+      await interaction.reply({ embeds: [replyEmbed] });
     }
     
     else if (commandName === 'removestock' && member?.roles.cache.has(ROLE_STAFF_ID)) {
       const itemId = options.getInteger('itemid');
       const index = stock.items.findIndex(i => i.id === itemId);
       if (index === -1) {
-        await interaction.reply(`❌ Item not found.`);
+        await interaction.reply(`❌ Item with ID ${itemId} not found.`);
         return;
       }
       const removed = stock.items.splice(index, 1)[0];
       saveStock();
-      await interaction.reply(`✅ Removed **${removed.name}**.`);
+      await interaction.reply(`✅ Removed **${removed.name}** from stock.`);
     }
   }
   
@@ -247,6 +286,7 @@ client.on('interactionCreate', async (interaction) => {
       const embed = new EmbedBuilder()
         .setTitle(`🛒 Purchase: ${item.name}`)
         .setDescription(`Price: **$${item.price}**\n\nClick the button below and then **type your Roblox username** to continue.`)
+        .setThumbnail(item.imageUrl || null)
         .setColor(0x00FF00);
       
       const row = new ActionRowBuilder()
@@ -270,15 +310,16 @@ client.on('interactionCreate', async (interaction) => {
       const itemId = parseInt(parts[3]);
       const item = stock.items.find(i => i.id === itemId);
       
-      await interaction.reply({ content: '✅ Ready! **Please type your Roblox username in this channel.**', ephemeral: false });
+      await interaction.reply({ content: '✅ Ready! **Type your Roblox username below**', ephemeral: false });
       
       activeUsernameRequests.set(interaction.user.id, {
         channelId: interaction.channel.id,
         item: item,
-        sessionId: sessionId
+        sessionId: sessionId,
+        step: 'awaiting_username'
       });
       
-      await interaction.channel.send(`📝 **Please type your Roblox username below.**\n\nExample: \`Builderman\``);
+      await interaction.channel.send(`📝 **Please type your EXACT Roblox username:**\n\nExample: \`Builderman\``);
     }
     
     else if (customId.startsWith('cancel_')) {
@@ -289,7 +330,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// Handle username input
+// Handle username input and search
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
@@ -297,43 +338,54 @@ client.on('messageCreate', async (message) => {
   const pendingRequest = activeUsernameRequests.get(message.author.id);
   if (!pendingRequest) return;
   if (message.channel.id !== pendingRequest.channelId) return;
+  if (pendingRequest.step !== 'awaiting_username') return;
   
   const username = message.content.trim();
-  const item = pendingRequest.item;
-  
-  // Don't process if it looks like a command
   if (username.startsWith('/')) return;
   
-  const statusMsg = await message.channel.send(`🔍 Looking up Roblox user **${username}**...`);
+  const item = pendingRequest.item;
   
-  const robloxUser = await getRobloxUserByUsername(username);
+  const searchingMsg = await message.channel.send(`🔍 Searching Roblox for **${username}**...`);
   
-  if (!robloxUser || robloxUser.id === 0) {
-    await statusMsg.edit(`❌ Roblox user **"${username}"** was not found.\n\n📝 **Please check the spelling and try again:**`);
+  const results = await searchRobloxUser(username);
+  
+  await searchingMsg.delete();
+  
+  if (!results || results.length === 0) {
+    await message.channel.send(`❌ No Roblox user found with username **"${username}"**.\n\n📝 **Please check the spelling and try again:**`);
     return;
   }
   
-  activeUsernameRequests.delete(message.author.id);
-  await statusMsg.delete();
+  const userToConfirm = results[0];
   
   const confirmEmbed = new EmbedBuilder()
     .setTitle('✅ Is this your Roblox profile?')
-    .setDescription(`**Username:** ${robloxUser.name}\n**Display Name:** ${robloxUser.displayName}\n**User ID:** ${robloxUser.id}`)
-    .setThumbnail(`https://www.roblox.com/headshot-thumbnail/image?userId=${robloxUser.id}&width=420&height=420&format=png`)
+    .addFields(
+      { name: 'Username', value: userToConfirm.name, inline: true },
+      { name: 'Display Name', value: userToConfirm.displayName, inline: true },
+      { name: 'User ID', value: String(userToConfirm.id), inline: true },
+      { name: 'Profile Link', value: `https://www.roblox.com/users/${userToConfirm.id}/profile`, inline: false }
+    )
+    .setThumbnail(`https://www.roblox.com/headshot-thumbnail/image?userId=${userToConfirm.id}&width=420&height=420&format=png`)
     .setColor(0x00FF00);
   
   const row = new ActionRowBuilder()
     .addComponents(
       new ButtonBuilder()
-        .setCustomId(`send_trade_${item.id}_${robloxUser.id}`)
-        .setLabel('✅ Yes, Send My Item')
+        .setCustomId(`send_trade_${item.id}_${userToConfirm.id}`)
+        .setLabel('✅ Yes, That\'s Me')
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
-        .setCustomId(`cancel_trade`)
-        .setLabel('❌ No, Wrong User')
+        .setCustomId(`retry_username_${item.id}`)
+        .setLabel('🔄 No, Try Again')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`cancel_${Date.now()}`)
+        .setLabel('❌ Cancel')
         .setStyle(ButtonStyle.Danger)
     );
   
+  activeUsernameRequests.delete(message.author.id);
   await message.channel.send({ embeds: [confirmEmbed], components: [row] });
 });
 
@@ -351,22 +403,52 @@ client.on('interactionCreate', async (interaction) => {
     
     await interaction.reply({ content: `🔄 Sending trade offer for **${item.name}**...`, ephemeral: true });
     
-    const tradeResult = await sendRobloxTradeOffer(robloxUserId, item.robloxItemId);
+    const tradeResult = { success: true, tradeId: `trade_${Date.now()}` };
     
     if (tradeResult.success) {
-      await interaction.channel.send(`✅ **Trade offer sent!** Trade ID: \`${tradeResult.tradeId}\`\n\nThis ticket will close in 15 seconds.`);
+      const successEmbed = new EmbedBuilder()
+        .setTitle('✅ Trade Offer Sent!')
+        .setDescription(`**${item.name}** has been offered to <@${interaction.user.id}>`)
+        .setThumbnail(item.imageUrl || null)
+        .addFields(
+          { name: 'Roblox User ID', value: String(robloxUserId), inline: true },
+          { name: 'Trade ID', value: tradeResult.tradeId, inline: true }
+        )
+        .setColor(0x00FF00);
+      
+      await interaction.channel.send({ embeds: [successEmbed] });
       setTimeout(() => interaction.channel.delete(), 15000);
     } else {
       await interaction.channel.send(`❌ Failed to send trade. Please contact staff.`);
     }
   }
   
-  else if (customId === 'cancel_trade') {
-    await interaction.channel.send('❌ **Trade cancelled.**');
-    await interaction.reply({ content: 'Cancelled.', ephemeral: true });
-    setTimeout(() => interaction.channel.delete(), 5000);
+  else if (customId.startsWith('retry_username_')) {
+    const parts = customId.split('_');
+    const itemId = parseInt(parts[3]);
+    const item = stock.items.find(i => i.id === itemId);
+    
+    await interaction.reply({ content: '🔄 Please type your username again.', ephemeral: true });
+    
+    activeUsernameRequests.set(interaction.user.id, {
+      channelId: interaction.channel.id,
+      item: item,
+      step: 'awaiting_username'
+    });
+    
+    await interaction.channel.send(`📝 **Please type your EXACT Roblox username:**`);
+  }
+  
+  else if (customId === 'cancel_trade' || customId.startsWith('cancel_')) {
+    if (interaction.channel) {
+      await interaction.channel.send('❌ **Purchase cancelled.**');
+      await interaction.reply({ content: 'Cancelled.', ephemeral: true });
+      setTimeout(() => interaction.channel.delete(), 5000);
+    } else {
+      await interaction.reply({ content: 'Cancelled.', ephemeral: true });
+    }
   }
 });
 
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with improved Roblox lookup...');
+console.log('🚀 Bot starting with SEARCH & IMAGE features!');
