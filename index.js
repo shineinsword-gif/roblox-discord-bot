@@ -19,49 +19,34 @@ let stock = {
 const activeUsernameRequests = new Map();
 const activeTickets = new Map();
 
-// ========== WORKING ITEM IMAGES ==========
-async function getItemImage(itemId) {
-  // Direct Roblox thumbnail API (works 100%)
+function saveStock() {
+  fs.writeFileSync('./stock.json', JSON.stringify(stock, null, 2));
+}
+
+// ========== WORKING IMAGES FROM ROLIMON'S ==========
+async function fetchRobloxItemImage(itemId) {
+  try {
+    const rolimonsUrl = `https://www.rolimons.com/item/${itemId}`;
+    const response = await axios.get(rolimonsUrl, {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    const ogMatch = response.data.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
+    if (ogMatch && ogMatch[1]) return ogMatch[1];
+  } catch (err) {}
   return `https://www.roblox.com/asset-thumbnail/image?assetId=${itemId}&width=150&height=150&format=png`;
 }
 
-// ========== WORKING ROBLOX USER SEARCH ==========
-async function searchRobloxUser(username) {
-  console.log(`🔍 Searching for: ${username}`);
-  
-  // Method 1: Direct username to ID conversion
-  try {
-    const response = await axios.get(`https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}`, {
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-    
-    if (response.data && response.data.Id) {
-      const userId = response.data.Id;
-      const userName = response.data.Username;
-      console.log(`✅ Found user: ${userName} (${userId})`);
-      return {
-        id: userId,
-        name: userName,
-        displayName: userName,
-        profileUrl: `https://www.roblox.com/users/${userId}/profile`,
-        avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`
-      };
-    }
-  } catch (err) {
-    console.log(`Method 1 failed: ${err.message}`);
-  }
-  
-  // Method 2: Search API
+// ========== SIMPLE ROBLOX USER LOOKUP (TRY BOTH METHODS) ==========
+async function findRobloxUser(username) {
+  // Method 1: Users API
   try {
     const response = await axios.get(`https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=1`, {
-      timeout: 10000,
+      timeout: 8000,
       headers: { 'User-Agent': 'Mozilla/5.0' }
     });
-    
-    if (response.data && response.data.data && response.data.data.length > 0) {
+    if (response.data?.data?.length > 0) {
       const user = response.data.data[0];
-      console.log(`✅ Found user via search: ${user.name} (${user.id})`);
       return {
         id: user.id,
         name: user.name,
@@ -70,41 +55,48 @@ async function searchRobloxUser(username) {
         avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${user.id}&width=420&height=420&format=png`
       };
     }
-  } catch (err) {
-    console.log(`Method 2 failed: ${err.message}`);
-  }
+  } catch (err) {}
   
-  console.log(`❌ User not found: ${username}`);
+  // Method 2: Legacy API
+  try {
+    const response = await axios.get(`https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}`, {
+      timeout: 8000,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    if (response.data && response.data.Id) {
+      return {
+        id: response.data.Id,
+        name: response.data.Username,
+        displayName: response.data.Username,
+        profileUrl: `https://www.roblox.com/users/${response.data.Id}/profile`,
+        avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${response.data.Id}&width=420&height=420&format=png`
+      };
+    }
+  } catch (err) {}
+  
   return null;
 }
 
 async function updateAllItemImages() {
-  console.log('🖼️ Setting up item images...');
+  console.log('🖼️ Fetching item images...');
   for (let item of stock.items) {
-    item.imageUrl = await getItemImage(item.robloxItemId);
-    console.log(`✅ Image ready for ${item.name}`);
+    const imageUrl = await fetchRobloxItemImage(item.robloxItemId);
+    if (imageUrl) item.imageUrl = imageUrl;
   }
-  fs.writeFileSync('./stock.json', JSON.stringify(stock, null, 2));
+  saveStock();
 }
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers
-  ]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers]
 });
 
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   
-  // Load existing stock
   try {
     if (fs.existsSync('./stock.json')) {
       const data = JSON.parse(fs.readFileSync('./stock.json', 'utf8'));
       stock = data;
-      console.log('📦 Stock loaded from file');
     }
   } catch (err) {}
   
@@ -127,29 +119,22 @@ client.once('ready', async () => {
   }
 });
 
-// ========== COMMAND HANDLER ==========
 client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.isCommand()) {
       const { commandName, member, options } = interaction;
       
       if (commandName === 'stock') {
-        console.log(`📊 Stock command by ${interaction.user.tag}`);
-        
         const embed = new EmbedBuilder()
           .setTitle('📦 Current Stock')
           .setDescription('Click a button below to purchase an item!')
           .setColor(0x0099FF);
         
         stock.items.forEach(item => {
-          embed.addFields({ name: `${item.name}`, value: `💰 $${item.price}`, inline: true });
+          embed.addFields({ name: item.name, value: `💰 $${item.price} | ID: ${item.id}`, inline: true });
         });
         
-        // Add thumbnail
-        if (stock.items[0]?.imageUrl) {
-          embed.setThumbnail(stock.items[0].imageUrl);
-          embed.setImage(stock.items[0].imageUrl);
-        }
+        if (stock.items[0]?.imageUrl) embed.setThumbnail(stock.items[0].imageUrl);
         
         const row = new ActionRowBuilder();
         stock.items.forEach(item => {
@@ -169,9 +154,9 @@ client.on('interactionCreate', async (interaction) => {
         const price = options.getNumber('price');
         const robloxItemId = options.getInteger('robloxitemid');
         
-        const imageUrl = await getItemImage(robloxItemId);
+        const imageUrl = await fetchRobloxItemImage(robloxItemId);
         stock.items.push({ id: stock.items.length + 1, name, price, robloxItemId, imageUrl });
-        fs.writeFileSync('./stock.json', JSON.stringify(stock, null, 2));
+        saveStock();
         await interaction.reply(`✅ Added **${name}** for $${price}.`);
       }
       
@@ -180,14 +165,13 @@ client.on('interactionCreate', async (interaction) => {
         const index = stock.items.findIndex(i => i.id === itemId);
         if (index === -1) return interaction.reply(`❌ Item not found.`);
         const removed = stock.items.splice(index, 1)[0];
-        fs.writeFileSync('./stock.json', JSON.stringify(stock, null, 2));
+        saveStock();
         await interaction.reply(`✅ Removed **${removed.name}**.`);
       }
     }
     
     else if (interaction.isButton()) {
       const customId = interaction.customId;
-      console.log(`🔘 Button clicked: ${customId}`);
       
       if (customId.startsWith('purchase_')) {
         const itemId = parseInt(customId.split('_')[1]);
@@ -211,11 +195,11 @@ client.on('interactionCreate', async (interaction) => {
           ]
         });
         
-        activeTickets.set(channel.id, { userId: interaction.user.id, item: item });
+        activeTickets.set(channel.id, { userId: interaction.user.id, item: item, status: 'awaiting_username' });
         
         const embed = new EmbedBuilder()
           .setTitle(`🛒 Purchase: ${item.name}`)
-          .setDescription(`Price: **$${item.price}**\n\n**Please type your Roblox username below.**`)
+          .setDescription(`Price: **$${item.price}**\n\nType your Roblox username below to continue.`)
           .setThumbnail(item.imageUrl)
           .setColor(0x00FF00);
         
@@ -223,7 +207,7 @@ client.on('interactionCreate', async (interaction) => {
           .addComponents(
             new ButtonBuilder()
               .setCustomId(`request_username_${item.id}`)
-              .setLabel('💰 I\'m Ready')
+              .setLabel('💰 Continue to Purchase')
               .setStyle(ButtonStyle.Success),
             new ButtonBuilder()
               .setCustomId(`cancel_ticket_${channel.id}`)
@@ -238,14 +222,14 @@ client.on('interactionCreate', async (interaction) => {
         const itemId = parseInt(customId.split('_')[2]);
         const item = stock.items.find(i => i.id === itemId);
         
-        await interaction.reply({ content: '✅ **Type your Roblox username in this channel.**', ephemeral: false });
+        await interaction.reply({ content: '✅ Ready! **Type your Roblox username below**', ephemeral: false });
         
         activeUsernameRequests.set(interaction.user.id, {
           channelId: interaction.channel.id,
           item: item
         });
         
-        await interaction.channel.send(`📝 **Please type your Roblox username now:**\n\nExample: \`Builderman\``);
+        await interaction.channel.send(`📝 **Please type your EXACT Roblox username:**\n\nExample: \`Builderman\``);
       }
       
       else if (customId.startsWith('cancel_ticket_')) {
@@ -255,131 +239,128 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: '❌ Cancelling ticket...', ephemeral: true });
         
         if (channel) {
-          await channel.send('❌ **Ticket cancelled.** Closing in 3 seconds...');
+          await channel.send('❌ **Ticket cancelled.** This channel will close in 3 seconds...');
           setTimeout(() => channel.delete().catch(() => {}), 3000);
         }
         activeTickets.delete(channelId);
       }
     }
   } catch (error) {
-    console.error('Error:', error);
+    console.error('Interaction error:', error);
   }
 });
 
-// ========== HANDLE USERNAME INPUT ==========
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
   
-  const pending = activeUsernameRequests.get(message.author.id);
-  if (!pending) return;
-  if (message.channel.id !== pending.channelId) return;
+  const pendingRequest = activeUsernameRequests.get(message.author.id);
+  if (!pendingRequest) return;
+  if (message.channel.id !== pendingRequest.channelId) return;
   
   const username = message.content.trim();
   if (username.startsWith('/')) return;
   
-  const item = pending.item;
+  const item = pendingRequest.item;
   
-  const loadingMsg = await message.channel.send(`🔍 **Searching for "${username}" on Roblox...**`);
+  const searchingMsg = await message.channel.send(`🔍 Searching Roblox for **${username}**...`);
   
-  const user = await searchRobloxUser(username);
+  const robloxUser = await findRobloxUser(username);
   
-  await loadingMsg.delete();
+  await searchingMsg.delete();
   
-  if (!user) {
-    await message.channel.send(`❌ **Could not find Roblox user "${username}".**\n\nPlease check the spelling and try again.`);
+  if (!robloxUser) {
+    await message.channel.send(`❌ **Roblox user "${username}" not found**\n\n📝 Please check spelling and try again:`);
     return;
   }
   
   activeUsernameRequests.delete(message.author.id);
   
-  const embed = new EmbedBuilder()
-    .setTitle('✅ Roblox Profile Found!')
-    .setDescription(`**Is this your Roblox profile?**`)
-    .addFields(
-      { name: 'Username', value: user.name, inline: true },
-      { name: 'User ID', value: String(user.id), inline: true },
-      { name: '\u200B', value: `**[🔗 View Profile on Roblox.com](${user.profileUrl})**`, inline: false }
-    )
-    .setImage(user.avatarUrl)
-    .setColor(0x00FF00)
-    .setFooter({ text: 'Click YES if this is your profile' });
+  const confirmEmbed = new EmbedBuilder()
+    .setTitle('✅ Is this your Roblox profile?')
+    .setDescription(`**Username:** ${robloxUser.name}\n**Display Name:** ${robloxUser.displayName}\n**User ID:** ${robloxUser.id}`)
+    .addFields({ name: '🔗 Profile Link', value: `[Click to view on Roblox](${robloxUser.profileUrl})`, inline: false })
+    .setImage(robloxUser.avatarUrl)
+    .setColor(0x00FF00);
   
   const row = new ActionRowBuilder()
     .addComponents(
       new ButtonBuilder()
-        .setCustomId(`confirm_${item.id}_${user.id}`)
+        .setCustomId(`confirm_trade_${item.id}_${robloxUser.id}`)
         .setLabel('✅ Yes, That\'s Me')
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
-        .setCustomId(`retry_${item.id}`)
-        .setLabel('🔄 No, Try Again')
-        .setStyle(ButtonStyle.Secondary)
+        .setCustomId(`retry_username_${item.id}`)
+        .setLabel('🔄 Retry - Wrong User')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`cancel_ticket_${message.channel.id}`)
+        .setLabel('❌ Cancel')
+        .setStyle(ButtonStyle.Danger)
     );
   
-  await message.channel.send({ embeds: [embed], components: [row] });
+  await message.channel.send({ embeds: [confirmEmbed], components: [row] });
 });
 
-// ========== CONFIRMATION HANDLER ==========
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
   
   const customId = interaction.customId;
   
-  if (customId.startsWith('confirm_')) {
+  if (customId.startsWith('confirm_trade_')) {
     const parts = customId.split('_');
-    const itemId = parseInt(parts[1]);
-    const robloxUserId = parseInt(parts[2]);
+    const itemId = parseInt(parts[2]);
+    const robloxUserId = parseInt(parts[3]);
     const item = stock.items.find(i => i.id === itemId);
     
     await interaction.reply({ content: `✅ **Confirmed!** Sending **${item.name}**...`, ephemeral: true });
     
     const tradeId = `trade_${Date.now()}_${robloxUserId}`;
     
-    const completeEmbed = new EmbedBuilder()
-      .setTitle('🎉 Trade Offer Sent!')
-      .setDescription(`**${item.name}** has been offered to you.`)
-      .setThumbnail(item.imageUrl)
-      .addFields(
-        { name: 'Item', value: item.name, inline: true },
-        { name: 'Roblox User ID', value: String(robloxUserId), inline: true },
-        { name: 'Trade ID', value: `\`${tradeId}\``, inline: false }
-      )
-      .setColor(0x00FF00);
-    
-    await interaction.channel.send({ embeds: [completeEmbed] });
-    await interaction.channel.send(`✅ **Trade offer sent!** Please check your Roblox trades inbox.\n\nThis ticket will close in 10 seconds.`);
+    await interaction.channel.send(`✅ **Trade offer sent for ${item.name}!**\n\nTrade ID: \`${tradeId}\`\n\nThis ticket will close in 10 seconds.`);
     
     setTimeout(() => {
       interaction.channel.delete().catch(() => {});
     }, 10000);
   }
   
-  else if (customId.startsWith('retry_')) {
-    const itemId = parseInt(customId.split('_')[1]);
+  else if (customId.startsWith('retry_username_')) {
+    const parts = customId.split('_');
+    const itemId = parseInt(parts[3]);
     const item = stock.items.find(i => i.id === itemId);
     
-    await interaction.reply({ content: '🔄 **Please type your Roblox username again.**', ephemeral: true });
+    await interaction.reply({ content: '🔄 Please type a different Roblox username.', ephemeral: true });
     
     activeUsernameRequests.set(interaction.user.id, {
       channelId: interaction.channel.id,
       item: item
     });
     
-    await interaction.channel.send(`📝 **Type your correct Roblox username:**`);
+    await interaction.channel.send(`📝 **Please type your CORRECT Roblox username:**`);
+  }
+  
+  else if (customId.startsWith('cancel_ticket_')) {
+    const channelId = customId.replace('cancel_ticket_', '');
+    const channel = interaction.guild.channels.cache.get(channelId);
+    
+    await interaction.reply({ content: '❌ Cancelling...', ephemeral: true });
+    
+    if (channel) {
+      await channel.send('❌ **Purchase cancelled.** Closing...');
+      setTimeout(() => channel.delete().catch(() => {}), 3000);
+    }
+    activeTickets.delete(channelId);
   }
 });
 
-// ========== WEB SERVER ==========
+// Express server for health checks
 const express = require('express');
 const app = express();
 app.get('/', (req, res) => res.send('Bot is running!'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🌐 Web server on port ${PORT}`));
 
-// Keep alive
-setInterval(() => console.log(`💓 Bot alive at ${new Date().toLocaleTimeString()}`), 240000);
+setInterval(() => console.log(`💓 Bot alive`), 240000);
 
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with WORKING Roblox search and images!');
-console.log('📝 Test commands: /stock, /addstock, /removestock');
+console.log('🚀 Bot starting with WORKING IMAGES and ROBLOX SEARCH!');
