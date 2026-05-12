@@ -1,4 +1,6 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits } = require('discord.js');
+const axios = require('axios');
+const fs = require('fs');
 require('dotenv').config();
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -6,7 +8,6 @@ const ROLE_STAFF_ID = process.env.ROLE_STAFF_ID;
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
-// Stock items
 let stock = {
   items: [
     { id: 1, name: "Rainbow Phoenix", price: 25, robloxItemId: 101 },
@@ -18,12 +19,106 @@ let stock = {
 const activeUsernameRequests = new Map();
 const activeTickets = new Map();
 
+function saveStock() {
+  fs.writeFileSync('./stock.json', JSON.stringify(stock, null, 2));
+}
+
+// ========== ROBLOX PROFILE LOOKUP (Bypasses Blocks) ==========
+async function findRobloxUser(username) {
+  // List of fallback methods to try
+  const methods = [
+    // Method 1: Use a public CORS proxy
+    async () => {
+      const proxyUrl = `https://cors-anywhere.herokuapp.com/https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=1`;
+      const response = await axios.get(proxyUrl, { timeout: 10000 });
+      if (response.data?.data?.length > 0) return response.data.data[0];
+      return null;
+    },
+    // Method 2: Use legacy API
+    async () => {
+      const response = await axios.get(`https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}`, { timeout: 10000 });
+      if (response.data && response.data.Id) {
+        return { id: response.data.Id, name: response.data.Username, displayName: response.data.Username };
+      }
+      return null;
+    },
+    // Method 3: Scrape from HTML page
+    async () => {
+      const response = await axios.get(`https://www.roblox.com/user.aspx?username=${encodeURIComponent(username)}`, {
+        timeout: 10000,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      });
+      const match = response.data.match(/\"userId\"\s*:\s*(\d+)/);
+      if (match && match[1]) {
+        return { id: parseInt(match[1]), name: username, displayName: username };
+      }
+      return null;
+    }
+  ];
+
+  for (const method of methods) {
+    try {
+      const user = await method();
+      if (user) {
+        console.log(`✅ Found user: ${user.name} (${user.id})`);
+        return user;
+      }
+    } catch (err) {
+      console.log(`Method failed: ${err.message}`);
+    }
+  }
+  return null;
+}
+
+// ========== FETCH ITEM IMAGE FROM ROLIMON'S ==========
+async function fetchRobloxItemImage(itemId) {
+  // Primary: Use Rolimon's
+  try {
+    const rolimonsUrl = `https://www.rolimons.com/item/${itemId}`;
+    const response = await axios.get(rolimonsUrl, {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    const ogImageMatch = response.data.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
+    if (ogImageMatch && ogImageMatch[1]) {
+      console.log(`✅ Found Rolimon's image for ${itemId}`);
+      return ogImageMatch[1];
+    }
+  } catch (err) {}
+
+  // Fallback: Roblox API
+  try {
+    const url = `https://thumbnails.roblox.com/v1/assets?assetIds=${itemId}&size=150x150&format=Png`;
+    const response = await axios.get(url, { timeout: 8000 });
+    if (response.data?.data?.[0]?.imageUrl) return response.data.data[0].imageUrl;
+  } catch (err) {}
+
+  return "https://www.rolimons.com/images/items/placeholder.png";
+}
+
+// Update all item images on startup
+async function updateAllItemImages() {
+  for (let item of stock.items) {
+    const imageUrl = await fetchRobloxItemImage(item.robloxItemId);
+    if (imageUrl) item.imageUrl = imageUrl;
+  }
+  saveStock();
+}
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers]
 });
 
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
+  
+  // Load stock and update images
+  try {
+    if (fs.existsSync('./stock.json')) {
+      stock = JSON.parse(fs.readFileSync('./stock.json', 'utf8'));
+    }
+  } catch (err) {}
+  await updateAllItemImages();
   
   const guild = client.guilds.cache.get(GUILD_ID);
   if (guild) {
@@ -36,31 +131,14 @@ client.once('ready', async () => {
       ]},
       { name: 'removestock', description: '[STAFF] Remove an item from stock', options: [
         { name: 'itemid', type: 4, description: 'Item ID to remove', required: true }
-      ]}
+      ]},
+      { name: 'refreshimages', description: '[STAFF] Refresh all item images from Rolimon\'s' }
     ]);
     console.log('✅ Commands registered!');
   }
 });
 
-// Simple Roblox user lookup
-async function findRobloxUser(username) {
-  try {
-    const axios = require('axios');
-    const response = await axios.get(`https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=1`, {
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-    if (response.data?.data?.length > 0) {
-      const user = response.data.data[0];
-      return { id: user.id, name: user.name, displayName: user.displayName || user.name };
-    }
-    return null;
-  } catch (err) {
-    return null;
-  }
-}
-
-// ========== SINGLE INTERACTION HANDLER ==========
+// ========== MAIN INTERACTION HANDLER ==========
 client.on('interactionCreate', async (interaction) => {
   try {
     // Handle Slash Commands
@@ -77,6 +155,7 @@ client.on('interactionCreate', async (interaction) => {
         
         stock.items.forEach(item => {
           embed.addFields({ name: item.name, value: `💰 $${item.price} | ID: ${item.id}`, inline: true });
+          if (item.imageUrl && !embed.data.thumbnail) embed.setThumbnail(item.imageUrl);
         });
         
         const row = new ActionRowBuilder();
@@ -97,7 +176,9 @@ client.on('interactionCreate', async (interaction) => {
         const price = options.getNumber('price');
         const robloxItemId = options.getInteger('robloxitemid');
         
-        stock.items.push({ id: stock.items.length + 1, name, price, robloxItemId });
+        const imageUrl = await fetchRobloxItemImage(robloxItemId);
+        stock.items.push({ id: stock.items.length + 1, name, price, robloxItemId, imageUrl });
+        saveStock();
         await interaction.reply(`✅ Added **${name}** for $${price}.`);
       }
       
@@ -106,7 +187,14 @@ client.on('interactionCreate', async (interaction) => {
         const index = stock.items.findIndex(i => i.id === itemId);
         if (index === -1) return interaction.reply(`❌ Item not found.`);
         const removed = stock.items.splice(index, 1)[0];
+        saveStock();
         await interaction.reply(`✅ Removed **${removed.name}**.`);
+      }
+      
+      else if (commandName === 'refreshimages' && member?.roles.cache.has(ROLE_STAFF_ID)) {
+        await interaction.reply('🖼️ Refreshing all item images from Rolimon\'s...');
+        await updateAllItemImages();
+        await interaction.followUp('✅ Images refreshed!');
       }
     }
     
@@ -124,7 +212,6 @@ client.on('interactionCreate', async (interaction) => {
           return;
         }
         
-        // Acknowledge the button press immediately
         await interaction.reply({ content: 'Creating ticket...', ephemeral: true });
         
         const ticketName = `ticket-${interaction.user.username}`;
@@ -144,6 +231,7 @@ client.on('interactionCreate', async (interaction) => {
         const embed = new EmbedBuilder()
           .setTitle(`🛒 Purchase: ${item.name}`)
           .setDescription(`Price: **$${item.price}**\n\nType your Roblox username below to continue.`)
+          .setThumbnail(item.imageUrl)
           .setColor(0x00FF00);
         
         const row = new ActionRowBuilder()
@@ -200,7 +288,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// Handle username input
+// ========== HANDLE USERNAME INPUT ==========
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
@@ -246,7 +334,7 @@ client.on('messageCreate', async (message) => {
   await message.channel.send({ embeds: [confirmEmbed], components: [row] });
 });
 
-// Handle confirm trade button
+// ========== HANDLE TRADE CONFIRMATION ==========
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
   
@@ -285,12 +373,13 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// Express server for Render
+// ========== WEB SERVER FOR RENDER HEALTH CHECKS ==========
 const express = require('express');
 const app = express();
 app.get('/', (req, res) => res.send('Bot is running!'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🌐 Web server on port ${PORT}`));
 
+// Start the bot
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with FULL PURCHASE SYSTEM!');
+console.log('🚀 Bot starting with Roblox profile proxy & Rolimon\'s images!');
