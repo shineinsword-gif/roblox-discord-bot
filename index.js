@@ -1,6 +1,7 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const axios = require('axios');
 const fs = require('fs');
+const cheerio = require('cheerio');
 require('dotenv').config();
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -23,62 +24,112 @@ function saveStock() {
   fs.writeFileSync('./stock.json', JSON.stringify(stock, null, 2));
 }
 
-// ========== WORKING ROBLOX SEARCH via ALL-ORIGINS PROXY ==========
-// This proxy makes the request look like it's coming from a browser
-async function findRobloxUserOnWebsite(username) {
-  console.log(`🔍 Searching Roblox.com for user: ${username}`);
+// ========== WORKING ROBLOX SEARCH (Multiple Methods) ==========
+async function findRobloxUser(username) {
+  console.log(`🔍 Searching for Roblox user: ${username}`);
   
-  // Use a free CORS proxy that works with Roblox
-  const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://www.roblox.com/user.aspx?username=${username}`)}`;
-  
+  // Method 1: Use Roblox's public API (sometimes works)
   try {
-    const response = await axios.get(proxyUrl, {
+    const apiUrl = `https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=5`;
+    const response = await axios.get(apiUrl, {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9'
+      }
+    });
+    
+    if (response.data?.data?.length > 0) {
+      const user = response.data.data[0];
+      if (user.name.toLowerCase() === username.toLowerCase() || 
+          user.displayName?.toLowerCase() === username.toLowerCase()) {
+        console.log(`✅ Found via API: ${user.name} (${user.id})`);
+        return {
+          id: user.id,
+          name: user.name,
+          displayName: user.displayName || user.name,
+          profileUrl: `https://www.roblox.com/users/${user.id}/profile`,
+          avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${user.id}&width=420&height=420&format=png`
+        };
+      }
+    }
+  } catch (err) {
+    console.log(`API method failed: ${err.message}`);
+  }
+  
+  // Method 2: Search via user ID lookup
+  try {
+    const idUrl = `https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}`;
+    const response = await axios.get(idUrl, {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    
+    if (response.data && response.data.Id) {
+      console.log(`✅ Found via ID API: ${response.data.Username} (${response.data.Id})`);
+      return {
+        id: response.data.Id,
+        name: response.data.Username,
+        displayName: response.data.Username,
+        profileUrl: `https://www.roblox.com/users/${response.data.Id}/profile`,
+        avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${response.data.Id}&width=420&height=420&format=png`
+      };
+    }
+  } catch (err) {
+    console.log(`ID API failed: ${err.message}`);
+  }
+  
+  // Method 3: Scrape the HTML page (last resort)
+  try {
+    const profileUrl = `https://www.roblox.com/user.aspx?username=${encodeURIComponent(username)}`;
+    const response = await axios.get(profileUrl, {
       timeout: 15000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
+        'Accept-Language': 'en-US,en;q=0.9'
       }
     });
     
     const html = response.data;
     
-    // Extract user ID from the HTML
+    // Check if we got an error page
+    if (html.includes('Page cannot be found') || html.includes('404')) {
+      console.log(`User not found - 404 page`);
+      return null;
+    }
+    
+    // Try to extract user ID from the HTML
+    const userIdPatterns = [
+          /data-userid="(\d+)"/i,
+          /\"userId\"\s*:\s*(\d+)/i,
+          /UserID=(\d+)/i,
+          /userId=(\d+)/i,
+          /\/users\/(\d+)\/profile/i
+        ];
+    
     let userId = null;
-    
-    // Method 1: Look for data-userid attribute
-    const userIdMatch = html.match(/data-userid="(\d+)"/i);
-    if (userIdMatch && userIdMatch[1]) {
-      userId = userIdMatch[1];
-    }
-    
-    // Method 2: Look for UserId in JavaScript
-    if (!userId) {
-      const jsUserIdMatch = html.match(/\"UserId\"\s*:\s*(\d+)/i);
-      if (jsUserIdMatch && jsUserIdMatch[1]) {
-        userId = jsUserIdMatch[1];
-      }
-    }
-    
-    // Method 3: Look for profile URL pattern
-    if (!userId) {
-      const profileMatch = html.match(/\/users\/(\d+)\/profile/i);
-      if (profileMatch && profileMatch[1]) {
-        userId = profileMatch[1];
+    for (const pattern of userIdPatterns) {
+      const match = html.match(pattern);
+      if (match && match[1]) {
+        userId = match[1];
+        break;
       }
     }
     
     if (userId) {
-      // Extract username from the page title
+      // Extract username from title
       let userName = username;
       const titleMatch = html.match(/<title>(.*?)<\/title>/i);
       if (titleMatch && titleMatch[1]) {
         const titleName = titleMatch[1].replace(' - Roblox', '').trim();
-        if (titleName && titleName !== 'Roblox') {
+        if (titleName && !titleName.includes('Roblox')) {
           userName = titleName;
         }
       }
       
-      console.log(`✅ Found user: ${userName} (ID: ${userId})`);
-      
+      console.log(`✅ Found via HTML scrape: ${userName} (${userId})`);
       return {
         id: parseInt(userId),
         name: userName,
@@ -87,74 +138,37 @@ async function findRobloxUserOnWebsite(username) {
         avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`
       };
     }
-    
-    console.log(`❌ User not found: ${username}`);
-    return null;
-    
-  } catch (error) {
-    console.error(`❌ Proxy error:`, error.message);
-    return null;
-  }
-}
-
-// Fallback: Try multiple proxy services
-async function findRobloxUserWithFallback(username) {
-  // List of proxy services to try
-  const proxies = [
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://www.roblox.com/user.aspx?username=${username}`)}`,
-    `https://cors-anywhere.herokuapp.com/https://www.roblox.com/user.aspx?username=${username}`,
-    `https://thingproxy.freeboard.io/fetch/https://www.roblox.com/user.aspx?username=${username}`
-  ];
-  
-  for (const proxy of proxies) {
-    try {
-      console.log(`🔄 Trying proxy: ${proxy.substring(0, 50)}...`);
-      const response = await axios.get(proxy, {
-        timeout: 10000,
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
-      
-      const html = response.data;
-      const userIdMatch = html.match(/data-userid="(\d+)"/i) || html.match(/\"UserId\"\s*:\s*(\d+)/i) || html.match(/\/users\/(\d+)\/profile/i);
-      
-      if (userIdMatch && userIdMatch[1]) {
-        const userId = userIdMatch[1];
-        console.log(`✅ Found user via proxy! ID: ${userId}`);
-        return {
-          id: parseInt(userId),
-          name: username,
-          displayName: username,
-          profileUrl: `https://www.roblox.com/users/${userId}/profile`,
-          avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`
-        };
-      }
-    } catch (err) {
-      console.log(`Proxy failed: ${err.message}`);
-    }
+  } catch (err) {
+    console.log(`HTML scrape failed: ${err.message}`);
   }
   
+  console.log(`❌ All methods failed for: ${username}`);
   return null;
 }
 
 // ========== FETCH ITEM IMAGE ==========
 async function fetchRobloxItemImage(itemId) {
+  // Method 1: Roblox Thumbnail API
   try {
-    const rolimonsUrl = `https://www.rolimons.com/item/${itemId}`;
-    const response = await axios.get(rolimonsUrl, {
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-    const ogMatch = response.data.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
-    if (ogMatch && ogMatch[1]) return ogMatch[1];
+    const url = `https://thumbnails.roblox.com/v1/assets?assetIds=${itemId}&size=150x150&format=Png`;
+    const response = await axios.get(url, { timeout: 8000 });
+    if (response.data?.data?.[0]?.imageUrl) {
+      return response.data.data[0].imageUrl;
+    }
   } catch (err) {}
   
+  // Method 2: Direct Roblox CDN
   return `https://www.roblox.com/asset-thumbnail/image?assetId=${itemId}&width=150&height=150&format=png`;
 }
 
 async function updateAllItemImages() {
+  console.log('🖼️ Fetching item images...');
   for (let item of stock.items) {
     const imageUrl = await fetchRobloxItemImage(item.robloxItemId);
-    if (imageUrl) item.imageUrl = imageUrl;
+    if (imageUrl) {
+      item.imageUrl = imageUrl;
+      console.log(`✅ Got image for ${item.name}`);
+    }
   }
   saveStock();
 }
@@ -204,7 +218,7 @@ client.on('interactionCreate', async (interaction) => {
           .setColor(0x0099FF);
         
         stock.items.forEach(item => {
-          embed.addFields({ name: item.name, value: `💰 $${item.price}`, inline: true });
+          embed.addFields({ name: `${item.name}`, value: `💰 $${item.price} | ID: ${item.id}`, inline: true });
         });
         
         if (stock.items[0]?.imageUrl) embed.setThumbnail(stock.items[0].imageUrl);
@@ -272,7 +286,7 @@ client.on('interactionCreate', async (interaction) => {
         
         const embed = new EmbedBuilder()
           .setTitle(`🛒 Purchase: ${item.name}`)
-          .setDescription(`Price: **$${item.price}**\n\n**Type your Roblox username below to continue.**\n\nThe bot will search Roblox.com for your profile.`)
+          .setDescription(`Price: **$${item.price}**\n\n**Type your Roblox username below to continue.**`)
           .setThumbnail(item.imageUrl)
           .setColor(0x00FF00);
         
@@ -336,29 +350,16 @@ client.on('messageCreate', async (message) => {
   if (username.startsWith('/')) return;
   
   const item = pendingRequest.item;
-  const ticketInfo = activeTickets.get(message.channel.id);
   
-  const searchingMsg = await message.channel.send(`🌐 **Searching Roblox.com for "${username}"...**\n\nThis may take 10-15 seconds.`);
+  const searchingMsg = await message.channel.send(`🔍 **Searching for Roblox user "${username}"...**\n\nTrying multiple search methods...`);
   
-  // Try the main proxy first
-  let robloxUser = await findRobloxUserOnWebsite(username);
-  
-  // If that fails, try fallback proxies
-  if (!robloxUser) {
-    await searchingMsg.edit(`🔄 Trying alternative method...`);
-    robloxUser = await findRobloxUserWithFallback(username);
-  }
+  const robloxUser = await findRobloxUser(username);
   
   await searchingMsg.delete();
   
   if (!robloxUser) {
-    await message.channel.send(`❌ **Could not find Roblox user "${username}"**\n\nPossible reasons:\n• Username is misspelled\n• Account is private or deleted\n• Roblox is rate limiting (try again in 1 minute)\n\n📝 **Please check spelling and try again:**`);
+    await message.channel.send(`❌ **Could not find Roblox user "${username}"**\n\nPossible reasons:\n• Username is misspelled\n• Account is private/deleted\n• Try a different username\n\n📝 **Please try again:**`);
     return;
-  }
-  
-  if (ticketInfo) {
-    ticketInfo.robloxUserId = robloxUser.id;
-    ticketInfo.robloxUsername = robloxUser.name;
   }
   
   activeUsernameRequests.delete(message.author.id);
@@ -368,6 +369,7 @@ client.on('messageCreate', async (message) => {
     .setDescription(`**Is this your Roblox profile?**`)
     .addFields(
       { name: 'Username', value: robloxUser.name, inline: true },
+      { name: 'Display Name', value: robloxUser.displayName, inline: true },
       { name: 'User ID', value: String(robloxUser.id), inline: true },
       { name: 'Profile Link', value: `[Click to view on Roblox](${robloxUser.profileUrl})`, inline: false }
     )
@@ -409,7 +411,7 @@ client.on('interactionCreate', async (interaction) => {
     
     const tradeId = `trade_${Date.now()}_${robloxUserId}`;
     
-    await interaction.channel.send(`✅ **Trade offer sent for ${item.name}!**\n\n📦 Item: ${item.name}\n👤 Roblox User ID: ${robloxUserId}\n🆔 Trade ID: \`${tradeId}\`\n\nPlease check your Roblox trades inbox.\n\nThis ticket will close in 10 seconds.`);
+    await interaction.channel.send(`✅ **Trade offer sent for ${item.name}!**\n\n📦 Item: ${item.name}\n👤 Roblox User ID: ${robloxUserId}\n🆔 Trade ID: \`${tradeId}\`\n\nThis ticket will close in 10 seconds.`);
     
     setTimeout(() => {
       interaction.channel.delete().catch(() => {});
@@ -445,7 +447,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// Express server
+// Express server for health checks
 const express = require('express');
 const app = express();
 app.get('/', (req, res) => res.send('Bot is running!'));
@@ -455,5 +457,5 @@ app.listen(PORT, () => console.log(`🌐 Web server on port ${PORT}`));
 setInterval(() => console.log(`💓 Bot alive`), 240000);
 
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with WORKING ROBLOX SEARCH via PROXY!');
-console.log('📝 The bot will search Roblox.com using a proxy that bypasses blocks.');
+console.log('🚀 Bot starting with MULTIPLE ROBLOX SEARCH METHODS!');
+console.log('📝 Methods: 1) API Search 2) ID Lookup 3) HTML Scraping');
