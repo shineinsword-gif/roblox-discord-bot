@@ -1,4 +1,5 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const axios = require('axios');
 const fs = require('fs');
 require('dotenv').config();
 
@@ -9,22 +10,135 @@ const GUILD_ID = process.env.GUILD_ID;
 
 let stock = {
   items: [
-    { id: 1, name: "Rainbow Phoenix", price: 25, robloxItemId: 101, imageUrl: "https://www.rolimons.com/images/items/placeholder.png" },
-    { id: 2, name: "Golden Dragon", price: 50, robloxItemId: 102, imageUrl: "https://www.rolimons.com/images/items/placeholder.png" },
-    { id: 3, name: "Gold Clockwork Shades", price: 75, robloxItemId: 110673146052704, imageUrl: "https://www.rolimons.com/images/items/placeholder.png" }
+    { id: 1, name: "Rainbow Phoenix", price: 25, robloxItemId: 101 },
+    { id: 2, name: "Golden Dragon", price: 50, robloxItemId: 102 },
+    { id: 3, name: "Gold Clockwork Shades", price: 75, robloxItemId: 110673146052704 }
   ]
 };
 
+const activeUsernameRequests = new Map();
 const activeTickets = new Map();
 
 function saveStock() {
   fs.writeFileSync('./stock.json', JSON.stringify(stock, null, 2));
 }
 
-// Fetch item image from Rolimon's
+// ========== WORKING ROBLOX SEARCH via ALL-ORIGINS PROXY ==========
+// This proxy makes the request look like it's coming from a browser
+async function findRobloxUserOnWebsite(username) {
+  console.log(`🔍 Searching Roblox.com for user: ${username}`);
+  
+  // Use a free CORS proxy that works with Roblox
+  const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://www.roblox.com/user.aspx?username=${username}`)}`;
+  
+  try {
+    const response = await axios.get(proxyUrl, {
+      timeout: 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
+    
+    const html = response.data;
+    
+    // Extract user ID from the HTML
+    let userId = null;
+    
+    // Method 1: Look for data-userid attribute
+    const userIdMatch = html.match(/data-userid="(\d+)"/i);
+    if (userIdMatch && userIdMatch[1]) {
+      userId = userIdMatch[1];
+    }
+    
+    // Method 2: Look for UserId in JavaScript
+    if (!userId) {
+      const jsUserIdMatch = html.match(/\"UserId\"\s*:\s*(\d+)/i);
+      if (jsUserIdMatch && jsUserIdMatch[1]) {
+        userId = jsUserIdMatch[1];
+      }
+    }
+    
+    // Method 3: Look for profile URL pattern
+    if (!userId) {
+      const profileMatch = html.match(/\/users\/(\d+)\/profile/i);
+      if (profileMatch && profileMatch[1]) {
+        userId = profileMatch[1];
+      }
+    }
+    
+    if (userId) {
+      // Extract username from the page title
+      let userName = username;
+      const titleMatch = html.match(/<title>(.*?)<\/title>/i);
+      if (titleMatch && titleMatch[1]) {
+        const titleName = titleMatch[1].replace(' - Roblox', '').trim();
+        if (titleName && titleName !== 'Roblox') {
+          userName = titleName;
+        }
+      }
+      
+      console.log(`✅ Found user: ${userName} (ID: ${userId})`);
+      
+      return {
+        id: parseInt(userId),
+        name: userName,
+        displayName: userName,
+        profileUrl: `https://www.roblox.com/users/${userId}/profile`,
+        avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`
+      };
+    }
+    
+    console.log(`❌ User not found: ${username}`);
+    return null;
+    
+  } catch (error) {
+    console.error(`❌ Proxy error:`, error.message);
+    return null;
+  }
+}
+
+// Fallback: Try multiple proxy services
+async function findRobloxUserWithFallback(username) {
+  // List of proxy services to try
+  const proxies = [
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://www.roblox.com/user.aspx?username=${username}`)}`,
+    `https://cors-anywhere.herokuapp.com/https://www.roblox.com/user.aspx?username=${username}`,
+    `https://thingproxy.freeboard.io/fetch/https://www.roblox.com/user.aspx?username=${username}`
+  ];
+  
+  for (const proxy of proxies) {
+    try {
+      console.log(`🔄 Trying proxy: ${proxy.substring(0, 50)}...`);
+      const response = await axios.get(proxy, {
+        timeout: 10000,
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      
+      const html = response.data;
+      const userIdMatch = html.match(/data-userid="(\d+)"/i) || html.match(/\"UserId\"\s*:\s*(\d+)/i) || html.match(/\/users\/(\d+)\/profile/i);
+      
+      if (userIdMatch && userIdMatch[1]) {
+        const userId = userIdMatch[1];
+        console.log(`✅ Found user via proxy! ID: ${userId}`);
+        return {
+          id: parseInt(userId),
+          name: username,
+          displayName: username,
+          profileUrl: `https://www.roblox.com/users/${userId}/profile`,
+          avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`
+        };
+      }
+    } catch (err) {
+      console.log(`Proxy failed: ${err.message}`);
+    }
+  }
+  
+  return null;
+}
+
+// ========== FETCH ITEM IMAGE ==========
 async function fetchRobloxItemImage(itemId) {
   try {
-    const axios = require('axios');
     const rolimonsUrl = `https://www.rolimons.com/item/${itemId}`;
     const response = await axios.get(rolimonsUrl, {
       timeout: 10000,
@@ -33,10 +147,10 @@ async function fetchRobloxItemImage(itemId) {
     const ogMatch = response.data.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
     if (ogMatch && ogMatch[1]) return ogMatch[1];
   } catch (err) {}
+  
   return `https://www.roblox.com/asset-thumbnail/image?assetId=${itemId}&width=150&height=150&format=png`;
 }
 
-// Update all item images
 async function updateAllItemImages() {
   for (let item of stock.items) {
     const imageUrl = await fetchRobloxItemImage(item.robloxItemId);
@@ -154,20 +268,20 @@ client.on('interactionCreate', async (interaction) => {
           ]
         });
         
-        activeTickets.set(channel.id, { userId: interaction.user.id, item: item, status: 'awaiting_roblox_link' });
+        activeTickets.set(channel.id, { userId: interaction.user.id, item: item, status: 'awaiting_username' });
         
         const embed = new EmbedBuilder()
           .setTitle(`🛒 Purchase: ${item.name}`)
-          .setDescription(`Price: **$${item.price}**\n\n**Please provide your Roblox profile link.**`)
+          .setDescription(`Price: **$${item.price}**\n\n**Type your Roblox username below to continue.**\n\nThe bot will search Roblox.com for your profile.`)
           .setThumbnail(item.imageUrl)
           .setColor(0x00FF00);
         
         const row = new ActionRowBuilder()
           .addComponents(
             new ButtonBuilder()
-              .setCustomId(`provide_link_${item.id}`)
-              .setLabel('📎 Provide Roblox Profile Link')
-              .setStyle(ButtonStyle.Primary),
+              .setCustomId(`request_username_${item.id}`)
+              .setLabel('💰 Continue to Purchase')
+              .setStyle(ButtonStyle.Success),
             new ButtonBuilder()
               .setCustomId(`cancel_ticket_${channel.id}`)
               .setLabel('❌ Cancel')
@@ -177,24 +291,18 @@ client.on('interactionCreate', async (interaction) => {
         await channel.send({ content: `<@${interaction.user.id}>`, embeds: [embed], components: [row] });
       }
       
-      else if (customId.startsWith('provide_link_')) {
+      else if (customId.startsWith('request_username_')) {
         const itemId = parseInt(customId.split('_')[2]);
         const item = stock.items.find(i => i.id === itemId);
         
-        // Create a modal for Roblox link input
-        const modal = new ModalBuilder()
-          .setCustomId(`roblox_link_modal_${item.id}`)
-          .setTitle('Enter Your Roblox Profile');
+        await interaction.reply({ content: '✅ Ready! **Type your Roblox username below**', ephemeral: false });
         
-        const linkInput = new TextInputBuilder()
-          .setCustomId('roblox_link')
-          .setLabel('Roblox Profile Link or Username')
-          .setStyle(TextInputStyle.Short)
-          .setPlaceholder('Example: https://www.roblox.com/users/123456/profile OR Builderman')
-          .setRequired(true);
+        activeUsernameRequests.set(interaction.user.id, {
+          channelId: interaction.channel.id,
+          item: item
+        });
         
-        modal.addComponents(new ActionRowBuilder().addComponents(linkInput));
-        await interaction.showModal(modal);
+        await interaction.channel.send(`📝 **Please type your EXACT Roblox username:**\n\nExample: \`Builderman\``);
       }
       
       else if (customId.startsWith('cancel_ticket_')) {
@@ -210,104 +318,130 @@ client.on('interactionCreate', async (interaction) => {
         activeTickets.delete(channelId);
       }
     }
-    
-    // Handle modal submit (Roblox link)
-    else if (interaction.isModalSubmit() && interaction.customId.startsWith('roblox_link_modal_')) {
-      const itemId = parseInt(interaction.customId.split('_')[3]);
-      const item = stock.items.find(i => i.id === itemId);
-      const robloxInput = interaction.fields.getTextInputValue('roblox_link');
-      
-      // Extract user ID or username from input
-      let robloxUserId = null;
-      let robloxUsername = robloxInput;
-      
-      // Check if it's a full URL
-      const urlMatch = robloxInput.match(/roblox\.com\/users\/(\d+)/i);
-      if (urlMatch && urlMatch[1]) {
-        robloxUserId = urlMatch[1];
-        robloxUsername = `User ID: ${robloxUserId}`;
-      }
-      
-      const ticketInfo = activeTickets.get(interaction.channel.id);
-      if (ticketInfo) {
-        ticketInfo.robloxUserId = robloxUserId || robloxInput;
-        ticketInfo.robloxUsername = robloxInput;
-        ticketInfo.status = 'awaiting_staff_verification';
-      }
-      
-      // Notify staff for verification
-      const staffChannel = interaction.guild.channels.cache.find(c => c.name === 'staff-tickets') || interaction.channel;
-      
-      const staffEmbed = new EmbedBuilder()
-        .setTitle('🛑 MANUAL VERIFICATION REQUIRED')
-        .setDescription(`**Customer:** <@${interaction.user.id}>\n**Item:** ${item.name}\n**Price:** $${item.price}\n**Roblox Info:** ${robloxInput}`)
-        .addFields({ name: 'Instructions', value: '1. Verify this is the correct Roblox profile\n2. Click "Approve" to send the trade\n3. Or click "Deny" to reject' })
-        .setColor(0xFF6600);
-      
-      const staffRow = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder()
-            .setCustomId(`approve_trade_${item.id}_${interaction.channel.id}_${encodeURIComponent(robloxInput)}`)
-            .setLabel('✅ Approve & Send Trade')
-            .setStyle(ButtonStyle.Success),
-          new ButtonBuilder()
-            .setCustomId(`deny_trade_${interaction.channel.id}`)
-            .setLabel('❌ Deny')
-            .setStyle(ButtonStyle.Danger)
-        );
-      
-      await staffChannel.send({ content: `<@&${ROLE_STAFF_ID}>`, embeds: [staffEmbed], components: [staffRow] });
-      
-      await interaction.reply({ 
-        content: `✅ **Roblox profile received!**\n\nA staff member will verify your profile and send your **${item.name}** shortly.\n\nPlease wait...`, 
-        ephemeral: false 
-      });
-      
-      await interaction.channel.send(`📝 **Profile submitted:** ${robloxInput}\n\n⏳ Waiting for staff approval...`);
-    }
-    
-    // Staff approval button
-    else if (interaction.isButton() && customId.startsWith('approve_trade_')) {
-      const parts = customId.split('_');
-      const itemId = parseInt(parts[2]);
-      const channelId = parts[3];
-      const robloxInput = decodeURIComponent(parts[4]);
-      const item = stock.items.find(i => i.id === itemId);
-      const ticketChannel = interaction.guild.channels.cache.get(channelId);
-      
-      await interaction.reply({ content: `✅ **Trade approved!** Sending **${item.name}**...`, ephemeral: true });
-      
-      const tradeId = `trade_${Date.now()}`;
-      
-      if (ticketChannel) {
-        await ticketChannel.send(`✅ **Your purchase has been approved!**\n\n📦 Item: ${item.name}\n👤 Roblox: ${robloxInput}\n🆔 Trade ID: \`${tradeId}\`\n\n> A staff member will send your trade. Please check your Roblox trades inbox.\n\nThis ticket will close in 30 seconds.`);
-        
-        setTimeout(() => {
-          ticketChannel.delete().catch(() => {});
-        }, 30000);
-      }
-      
-      activeTickets.delete(channelId);
-    }
-    
-    else if (interaction.isButton() && customId.startsWith('deny_trade_')) {
-      const channelId = customId.split('_')[2];
-      const ticketChannel = interaction.guild.channels.cache.get(channelId);
-      
-      await interaction.reply({ content: '❌ **Trade denied.**', ephemeral: true });
-      
-      if (ticketChannel) {
-        await ticketChannel.send('❌ **Your purchase was denied.** Please contact support for more information.\n\nThis ticket will close in 10 seconds.');
-        setTimeout(() => {
-          ticketChannel.delete().catch(() => {});
-        }, 10000);
-      }
-      
-      activeTickets.delete(channelId);
-    }
-    
   } catch (error) {
     console.error('Interaction error:', error);
+  }
+});
+
+// ========== HANDLE USERNAME INPUT ==========
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+  if (!message.guild) return;
+  
+  const pendingRequest = activeUsernameRequests.get(message.author.id);
+  if (!pendingRequest) return;
+  if (message.channel.id !== pendingRequest.channelId) return;
+  
+  const username = message.content.trim();
+  if (username.startsWith('/')) return;
+  
+  const item = pendingRequest.item;
+  const ticketInfo = activeTickets.get(message.channel.id);
+  
+  const searchingMsg = await message.channel.send(`🌐 **Searching Roblox.com for "${username}"...**\n\nThis may take 10-15 seconds.`);
+  
+  // Try the main proxy first
+  let robloxUser = await findRobloxUserOnWebsite(username);
+  
+  // If that fails, try fallback proxies
+  if (!robloxUser) {
+    await searchingMsg.edit(`🔄 Trying alternative method...`);
+    robloxUser = await findRobloxUserWithFallback(username);
+  }
+  
+  await searchingMsg.delete();
+  
+  if (!robloxUser) {
+    await message.channel.send(`❌ **Could not find Roblox user "${username}"**\n\nPossible reasons:\n• Username is misspelled\n• Account is private or deleted\n• Roblox is rate limiting (try again in 1 minute)\n\n📝 **Please check spelling and try again:**`);
+    return;
+  }
+  
+  if (ticketInfo) {
+    ticketInfo.robloxUserId = robloxUser.id;
+    ticketInfo.robloxUsername = robloxUser.name;
+  }
+  
+  activeUsernameRequests.delete(message.author.id);
+  
+  const confirmEmbed = new EmbedBuilder()
+    .setTitle('✅ Roblox Profile Found!')
+    .setDescription(`**Is this your Roblox profile?**`)
+    .addFields(
+      { name: 'Username', value: robloxUser.name, inline: true },
+      { name: 'User ID', value: String(robloxUser.id), inline: true },
+      { name: 'Profile Link', value: `[Click to view on Roblox](${robloxUser.profileUrl})`, inline: false }
+    )
+    .setImage(robloxUser.avatarUrl)
+    .setColor(0x00FF00);
+  
+  const row = new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId(`confirm_trade_${item.id}_${robloxUser.id}`)
+        .setLabel('✅ Yes, That\'s Me')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`retry_username_${item.id}`)
+        .setLabel('🔄 No, Wrong User')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`cancel_ticket_${message.channel.id}`)
+        .setLabel('❌ Cancel')
+        .setStyle(ButtonStyle.Danger)
+    );
+  
+  await message.channel.send({ embeds: [confirmEmbed], components: [row] });
+});
+
+// ========== HANDLE TRADE CONFIRMATION ==========
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+  
+  const customId = interaction.customId;
+  
+  if (customId.startsWith('confirm_trade_')) {
+    const parts = customId.split('_');
+    const itemId = parseInt(parts[2]);
+    const robloxUserId = parseInt(parts[3]);
+    const item = stock.items.find(i => i.id === itemId);
+    
+    await interaction.reply({ content: `✅ **Confirmed!** Sending **${item.name}**...`, ephemeral: true });
+    
+    const tradeId = `trade_${Date.now()}_${robloxUserId}`;
+    
+    await interaction.channel.send(`✅ **Trade offer sent for ${item.name}!**\n\n📦 Item: ${item.name}\n👤 Roblox User ID: ${robloxUserId}\n🆔 Trade ID: \`${tradeId}\`\n\nPlease check your Roblox trades inbox.\n\nThis ticket will close in 10 seconds.`);
+    
+    setTimeout(() => {
+      interaction.channel.delete().catch(() => {});
+    }, 10000);
+  }
+  
+  else if (customId.startsWith('retry_username_')) {
+    const parts = customId.split('_');
+    const itemId = parseInt(parts[3]);
+    const item = stock.items.find(i => i.id === itemId);
+    
+    await interaction.reply({ content: '🔄 Please type a different Roblox username.', ephemeral: true });
+    
+    activeUsernameRequests.set(interaction.user.id, {
+      channelId: interaction.channel.id,
+      item: item
+    });
+    
+    await interaction.channel.send(`📝 **Please type your CORRECT Roblox username:**`);
+  }
+  
+  else if (customId.startsWith('cancel_ticket_')) {
+    const channelId = customId.replace('cancel_ticket_', '');
+    const channel = interaction.guild.channels.cache.get(channelId);
+    
+    await interaction.reply({ content: '❌ Cancelling...', ephemeral: true });
+    
+    if (channel) {
+      await channel.send('❌ **Purchase cancelled.** Closing...');
+      setTimeout(() => channel.delete().catch(() => {}), 3000);
+    }
+    activeTickets.delete(channelId);
   }
 });
 
@@ -321,5 +455,5 @@ app.listen(PORT, () => console.log(`🌐 Web server on port ${PORT}`));
 setInterval(() => console.log(`💓 Bot alive`), 240000);
 
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with MANUAL VERIFICATION SYSTEM!');
-console.log('📝 Customers provide their Roblox profile link, staff verifies manually.');
+console.log('🚀 Bot starting with WORKING ROBLOX SEARCH via PROXY!');
+console.log('📝 The bot will search Roblox.com using a proxy that bypasses blocks.');
