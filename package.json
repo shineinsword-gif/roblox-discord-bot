@@ -1,17 +1,15 @@
 {
-  "name": "roblox-discord-payment-bot",
+  "name": "roblox-discord-bot",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
-    "stripe": "^14.21.0",
     "axios": "^1.6.2",
     "express": "^4.18.2",
     "dotenv": "^16.3.1",
-    "nodemon": "^3.0.2"
+    "cheerio": "^1.0.0-rc.12"
   }
 }
