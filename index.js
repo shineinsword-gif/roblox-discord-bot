@@ -1,7 +1,6 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits } = require('discord.js');
 const axios = require('axios');
 const fs = require('fs');
-const cheerio = require('cheerio');
 require('dotenv').config();
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -24,50 +23,75 @@ function saveStock() {
   fs.writeFileSync('./stock.json', JSON.stringify(stock, null, 2));
 }
 
-// ========== WORKING ROBLOX SEARCH (Multiple Methods) ==========
+// ========== WORKING ITEM IMAGES FROM ROLIMON'S ==========
+async function fetchRobloxItemImage(itemId) {
+  try {
+    // Use Rolimon's - reliable for images
+    const rolimonsUrl = `https://www.rolimons.com/item/${itemId}`;
+    const response = await axios.get(rolimonsUrl, {
+      timeout: 10000,
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html'
+      }
+    });
+    
+    // Look for the item image in the HTML
+    const imgMatch = response.data.match(/<img[^>]*src=["']([^"']*\.png)["'][^>]*class=["'][^"']*item-image[^"']*["']/i);
+    if (imgMatch && imgMatch[1]) {
+      let imgUrl = imgMatch[1];
+      if (imgUrl.startsWith('//')) imgUrl = 'https:' + imgUrl;
+      console.log(`✅ Got image from Rolimon's for ${itemId}`);
+      return imgUrl;
+    }
+    
+    // Fallback: Direct Roblox thumbnail
+    return `https://www.roblox.com/asset-thumbnail/image?assetId=${itemId}&width=150&height=150&format=png`;
+  } catch (err) {
+    console.log(`Rolimon's failed for ${itemId}, using fallback`);
+    return `https://www.roblox.com/asset-thumbnail/image?assetId=${itemId}&width=150&height=150&format=png`;
+  }
+}
+
+// ========== ROBLOX USER SEARCH ==========
 async function findRobloxUser(username) {
   console.log(`🔍 Searching for Roblox user: ${username}`);
   
-  // Method 1: Use Roblox's public API (sometimes works)
+  // Method 1: Roblox API
   try {
     const apiUrl = `https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=5`;
     const response = await axios.get(apiUrl, {
       timeout: 10000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json',
-        'Accept-Language': 'en-US,en;q=0.9'
+        'User-Agent': 'Mozilla/5.0',
+        'Accept': 'application/json'
       }
     });
     
     if (response.data?.data?.length > 0) {
-      const user = response.data.data[0];
-      if (user.name.toLowerCase() === username.toLowerCase() || 
-          user.displayName?.toLowerCase() === username.toLowerCase()) {
-        console.log(`✅ Found via API: ${user.name} (${user.id})`);
-        return {
-          id: user.id,
-          name: user.name,
-          displayName: user.displayName || user.name,
-          profileUrl: `https://www.roblox.com/users/${user.id}/profile`,
-          avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${user.id}&width=420&height=420&format=png`
-        };
+      for (const user of response.data.data) {
+        if (user.name.toLowerCase() === username.toLowerCase() || 
+            user.displayName?.toLowerCase() === username.toLowerCase()) {
+          console.log(`✅ Found via API: ${user.name} (${user.id})`);
+          return {
+            id: user.id,
+            name: user.name,
+            displayName: user.displayName || user.name,
+            profileUrl: `https://www.roblox.com/users/${user.id}/profile`,
+            avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${user.id}&width=420&height=420&format=png`
+          };
+        }
       }
     }
-  } catch (err) {
-    console.log(`API method failed: ${err.message}`);
-  }
+  } catch (err) {}
   
-  // Method 2: Search via user ID lookup
+  // Method 2: Legacy API
   try {
     const idUrl = `https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}`;
-    const response = await axios.get(idUrl, {
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
+    const response = await axios.get(idUrl, { timeout: 10000 });
     
     if (response.data && response.data.Id) {
-      console.log(`✅ Found via ID API: ${response.data.Username} (${response.data.Id})`);
+      console.log(`✅ Found via legacy API: ${response.data.Username} (${response.data.Id})`);
       return {
         id: response.data.Id,
         name: response.data.Username,
@@ -76,89 +100,9 @@ async function findRobloxUser(username) {
         avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${response.data.Id}&width=420&height=420&format=png`
       };
     }
-  } catch (err) {
-    console.log(`ID API failed: ${err.message}`);
-  }
-  
-  // Method 3: Scrape the HTML page (last resort)
-  try {
-    const profileUrl = `https://www.roblox.com/user.aspx?username=${encodeURIComponent(username)}`;
-    const response = await axios.get(profileUrl, {
-      timeout: 15000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
-        'Accept-Language': 'en-US,en;q=0.9'
-      }
-    });
-    
-    const html = response.data;
-    
-    // Check if we got an error page
-    if (html.includes('Page cannot be found') || html.includes('404')) {
-      console.log(`User not found - 404 page`);
-      return null;
-    }
-    
-    // Try to extract user ID from the HTML
-    const userIdPatterns = [
-          /data-userid="(\d+)"/i,
-          /\"userId\"\s*:\s*(\d+)/i,
-          /UserID=(\d+)/i,
-          /userId=(\d+)/i,
-          /\/users\/(\d+)\/profile/i
-        ];
-    
-    let userId = null;
-    for (const pattern of userIdPatterns) {
-      const match = html.match(pattern);
-      if (match && match[1]) {
-        userId = match[1];
-        break;
-      }
-    }
-    
-    if (userId) {
-      // Extract username from title
-      let userName = username;
-      const titleMatch = html.match(/<title>(.*?)<\/title>/i);
-      if (titleMatch && titleMatch[1]) {
-        const titleName = titleMatch[1].replace(' - Roblox', '').trim();
-        if (titleName && !titleName.includes('Roblox')) {
-          userName = titleName;
-        }
-      }
-      
-      console.log(`✅ Found via HTML scrape: ${userName} (${userId})`);
-      return {
-        id: parseInt(userId),
-        name: userName,
-        displayName: userName,
-        profileUrl: `https://www.roblox.com/users/${userId}/profile`,
-        avatarUrl: `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=420&height=420&format=png`
-      };
-    }
-  } catch (err) {
-    console.log(`HTML scrape failed: ${err.message}`);
-  }
-  
-  console.log(`❌ All methods failed for: ${username}`);
-  return null;
-}
-
-// ========== FETCH ITEM IMAGE ==========
-async function fetchRobloxItemImage(itemId) {
-  // Method 1: Roblox Thumbnail API
-  try {
-    const url = `https://thumbnails.roblox.com/v1/assets?assetIds=${itemId}&size=150x150&format=Png`;
-    const response = await axios.get(url, { timeout: 8000 });
-    if (response.data?.data?.[0]?.imageUrl) {
-      return response.data.data[0].imageUrl;
-    }
   } catch (err) {}
   
-  // Method 2: Direct Roblox CDN
-  return `https://www.roblox.com/asset-thumbnail/image?assetId=${itemId}&width=150&height=150&format=png`;
+  return null;
 }
 
 async function updateAllItemImages() {
@@ -168,6 +112,8 @@ async function updateAllItemImages() {
     if (imageUrl) {
       item.imageUrl = imageUrl;
       console.log(`✅ Got image for ${item.name}`);
+    } else {
+      item.imageUrl = null;
     }
   }
   saveStock();
@@ -183,6 +129,7 @@ client.once('ready', async () => {
   try {
     if (fs.existsSync('./stock.json')) {
       stock = JSON.parse(fs.readFileSync('./stock.json', 'utf8'));
+      console.log('✅ Stock loaded');
     }
   } catch (err) {}
   
@@ -221,7 +168,9 @@ client.on('interactionCreate', async (interaction) => {
           embed.addFields({ name: `${item.name}`, value: `💰 $${item.price} | ID: ${item.id}`, inline: true });
         });
         
-        if (stock.items[0]?.imageUrl) embed.setThumbnail(stock.items[0].imageUrl);
+        if (stock.items[0]?.imageUrl) {
+          embed.setThumbnail(stock.items[0].imageUrl);
+        }
         
         const row = new ActionRowBuilder();
         stock.items.forEach(item => {
@@ -351,19 +300,20 @@ client.on('messageCreate', async (message) => {
   
   const item = pendingRequest.item;
   
-  const searchingMsg = await message.channel.send(`🔍 **Searching for Roblox user "${username}"...**\n\nTrying multiple search methods...`);
+  const searchingMsg = await message.channel.send(`🔍 **Searching for Roblox user "${username}"...**`);
   
   const robloxUser = await findRobloxUser(username);
   
   await searchingMsg.delete();
   
   if (!robloxUser) {
-    await message.channel.send(`❌ **Could not find Roblox user "${username}"**\n\nPossible reasons:\n• Username is misspelled\n• Account is private/deleted\n• Try a different username\n\n📝 **Please try again:**`);
+    await message.channel.send(`❌ **Could not find Roblox user "${username}"**\n\n📝 **Please check spelling and try again:**`);
     return;
   }
   
   activeUsernameRequests.delete(message.author.id);
   
+  // FIXED: Properly formatted embed with WORKING link and avatar image
   const confirmEmbed = new EmbedBuilder()
     .setTitle('✅ Roblox Profile Found!')
     .setDescription(`**Is this your Roblox profile?**`)
@@ -371,10 +321,11 @@ client.on('messageCreate', async (message) => {
       { name: 'Username', value: robloxUser.name, inline: true },
       { name: 'Display Name', value: robloxUser.displayName, inline: true },
       { name: 'User ID', value: String(robloxUser.id), inline: true },
-      { name: 'Profile Link', value: `[Click to view on Roblox](${robloxUser.profileUrl})`, inline: false }
+      { name: '\u200B', value: `**[🔗 Click here to view profile on Roblox.com](${robloxUser.profileUrl})**`, inline: false }
     )
     .setImage(robloxUser.avatarUrl)
-    .setColor(0x00FF00);
+    .setColor(0x00FF00)
+    .setFooter({ text: 'Please verify this is your profile before continuing' });
   
   const row = new ActionRowBuilder()
     .addComponents(
@@ -411,7 +362,19 @@ client.on('interactionCreate', async (interaction) => {
     
     const tradeId = `trade_${Date.now()}_${robloxUserId}`;
     
-    await interaction.channel.send(`✅ **Trade offer sent for ${item.name}!**\n\n📦 Item: ${item.name}\n👤 Roblox User ID: ${robloxUserId}\n🆔 Trade ID: \`${tradeId}\`\n\nThis ticket will close in 10 seconds.`);
+    const completeEmbed = new EmbedBuilder()
+      .setTitle('🎉 Trade Offer Sent!')
+      .setDescription(`**${item.name}** has been offered to you!`)
+      .setThumbnail(item.imageUrl)
+      .addFields(
+        { name: 'Item', value: item.name, inline: true },
+        { name: 'Roblox User ID', value: String(robloxUserId), inline: true },
+        { name: 'Trade ID', value: `\`${tradeId}\``, inline: false }
+      )
+      .setColor(0x00FF00);
+    
+    await interaction.channel.send({ embeds: [completeEmbed] });
+    await interaction.channel.send(`✅ **Trade offer sent!** Please check your Roblox trades inbox.\n\nThis ticket will close in 10 seconds.`);
     
     setTimeout(() => {
       interaction.channel.delete().catch(() => {});
@@ -457,5 +420,4 @@ app.listen(PORT, () => console.log(`🌐 Web server on port ${PORT}`));
 setInterval(() => console.log(`💓 Bot alive`), 240000);
 
 client.login(DISCORD_TOKEN);
-console.log('🚀 Bot starting with MULTIPLE ROBLOX SEARCH METHODS!');
-console.log('📝 Methods: 1) API Search 2) ID Lookup 3) HTML Scraping');
+console.log('🚀 Bot starting with WORKING IMAGES & PROFILE LINKS!');
