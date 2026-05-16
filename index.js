@@ -197,10 +197,27 @@ app.get('/logs', (req, res) => {
 });
 app.listen(process.env.PORT || 3000, () => console.log(`🌐 Web server on port ${process.env.PORT || 3000}`));
 
-function createMainStockEmbed() {
-  const embed = new EmbedBuilder().setTitle('📦 Current Stock').setDescription('Use the buttons below to browse or search').setColor(0x0099FF);
-  stock.items.forEach(item => embed.addFields({ name: `${item.name}`, value: `💰 $${item.price} | 🆔 ID: ${item.id}`, inline: true }));
-  return embed;
+function createStockEmbeds() {
+  const embeds = [
+    new EmbedBuilder()
+      .setTitle('📦 Current Stock')
+      .setDescription(`Use the buttons below to browse or search\n**${stock.items.length}** item(s) in stock`)
+      .setColor(0x0099FF)
+  ];
+  const maxItemEmbeds = 9;
+  stock.items.slice(0, maxItemEmbeds).forEach(item => {
+    const itemEmbed = new EmbedBuilder()
+      .setTitle(item.name)
+      .setDescription(`💰 $${item.price} | 🆔 ID: ${item.id}`)
+      .setColor(0x0099FF);
+    if (item.imageUrl) itemEmbed.setThumbnail(item.imageUrl);
+    embeds.push(itemEmbed);
+  });
+  if (stock.items.length > maxItemEmbeds) {
+    const overflow = stock.items.slice(maxItemEmbeds).map(i => `**${i.name}** — $${i.price} (ID: ${i.id})`).join('\n');
+    embeds[0].addFields({ name: 'Additional items', value: overflow.slice(0, 1024), inline: false });
+  }
+  return embeds;
 }
 
 client.on('interactionCreate', async (interaction) => {
@@ -211,7 +228,7 @@ client.on('interactionCreate', async (interaction) => {
         new ButtonBuilder().setCustomId('view_all_ephemeral').setLabel('📋 View All Items').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('refresh_stock_view').setLabel('🔄 Refresh').setStyle(ButtonStyle.Secondary)
       );
-      await interaction.reply({ embeds: [createMainStockEmbed()], components: [row] });
+      await interaction.reply({ embeds: createStockEmbeds(), components: [row] });
     }
     else if (interaction.commandName === 'addstock' && interaction.member?.roles.cache.has(ROLE_STAFF_ID)) {
       const name = interaction.options.getString('name');
@@ -305,7 +322,7 @@ client.on('interactionCreate', async (interaction) => {
         new ButtonBuilder().setCustomId('view_all_ephemeral').setLabel('📋 View All Items').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('refresh_stock_view').setLabel('🔄 Refresh').setStyle(ButtonStyle.Secondary)
       );
-      await interaction.update({ embeds: [createMainStockEmbed()], components: [row] });
+      await interaction.update({ embeds: createStockEmbeds(), components: [row] });
     }
     
     else if (customId === 'view_all_ephemeral') {
