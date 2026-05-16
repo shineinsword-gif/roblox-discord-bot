@@ -1,7 +1,6 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const axios = require('axios');
 const fs = require('fs');
-const sharp = require('sharp');
 require('dotenv').config();
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -198,8 +197,6 @@ app.get('/logs', (req, res) => {
 });
 app.listen(process.env.PORT || 3000, () => console.log(`🌐 Web server on port ${process.env.PORT || 3000}`));
 
-const COLLAGE_CELL = 96;
-const COLLAGE_PAD = 6;
 const ITEMS_PER_PAGE = 10;
 
 function getStockTotalPages() {
@@ -216,44 +213,13 @@ function clampStockPage(page) {
   return Math.min(Math.max(0, page), totalPages - 1);
 }
 
-async function downloadImageBuffer(url) {
-  try {
-    const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' } });
-    return Buffer.from(response.data);
-  } catch (err) { return null; }
-}
-
-async function buildStockCollageBuffer(items) {
-  if (items.length === 0) return null;
-  const cols = Math.min(5, Math.max(1, Math.ceil(Math.sqrt(items.length))));
-  const rows = Math.ceil(items.length / cols);
-  const cell = COLLAGE_CELL;
-  const pad = COLLAGE_PAD;
-  const width = cols * cell + (cols + 1) * pad;
-  const height = rows * cell + (rows + 1) * pad;
-  const placeholder = await sharp({
-    create: { width: cell, height: cell, channels: 4, background: { r: 55, g: 58, b: 64, alpha: 1 } }
-  }).png().toBuffer();
-  const composites = [];
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    let tile = placeholder;
-    if (item.imageUrl) {
-      const raw = await downloadImageBuffer(item.imageUrl);
-      if (raw) {
-        try {
-          tile = await sharp(raw).resize(cell, cell, { fit: 'cover' }).png().toBuffer();
-        } catch (err) {}
-      }
-    }
-    composites.push({ input: tile, left: pad + col * (cell + pad), top: pad + row * (cell + pad) });
-  }
-  const base = await sharp({
-    create: { width, height, channels: 4, background: { r: 30, g: 33, b: 40, alpha: 1 } }
-  }).png().toBuffer();
-  return sharp(base).composite(composites).png().toBuffer();
+function buildItemEmbed(item, num) {
+  const author = { name: `${num}. ${item.name}` };
+  if (item.imageUrl) author.iconURL = item.imageUrl;
+  return new EmbedBuilder()
+    .setColor(0x0099FF)
+    .setAuthor(author)
+    .setDescription(`💰 $${item.price} | 🆔 ID: ${item.id} | Roblox: ${item.robloxItemId}`);
 }
 
 function buildStockNavRow(page) {
@@ -284,36 +250,23 @@ async function buildStockPagePayload(page = 0) {
   const safePage = clampStockPage(page);
   const totalPages = getStockTotalPages();
   const pageItems = getStockPageItems(safePage);
+  const startNum = safePage * ITEMS_PER_PAGE + 1;
 
-  const embed = new EmbedBuilder()
-    .setTitle('📦 Current Stock')
-    .setDescription(
-      `Page **${safePage + 1}** of **${totalPages}** · **${stock.items.length}** item(s) in stock\nUse ◀ ▶ to flip pages · 🔍 to search`
-    )
-    .setColor(0x0099FF);
+  const header =
+    `**📦 Current Stock**\n` +
+    `Page **${safePage + 1}** of **${totalPages}** · **${stock.items.length}** item(s) in stock\n` +
+    `Use ◀ ▶ to flip pages · 🔍 to search`;
 
-  if (pageItems.length === 0) {
-    embed.addFields({ name: 'No items', value: 'Stock is empty.', inline: false });
-  } else {
-    pageItems.forEach((item, index) => {
-      const num = safePage * ITEMS_PER_PAGE + index + 1;
-      embed.addFields({
-        name: `${num}. ${item.name}`,
-        value: `💰 $${item.price} | 🆔 ID: ${item.id} | Roblox: ${item.robloxItemId}`,
-        inline: false
-      });
-    });
-  }
+  const embeds = pageItems.length === 0
+    ? [new EmbedBuilder().setColor(0x0099FF).setDescription('*Stock is empty.*')]
+    : pageItems.map((item, index) => buildItemEmbed(item, startNum + index));
 
-  const payload = { embeds: [embed], files: [] };
-  const collage = await buildStockCollageBuffer(pageItems);
-  if (collage) {
-    payload.files.push({ attachment: collage, name: 'stock-collage.png' });
-    embed.setImage('attachment://stock-collage.png');
-  }
-
-  payload.components = [buildStockNavRow(safePage), ...buildStockPurchaseRows(pageItems)];
-  return payload;
+  return {
+    content: header,
+    embeds,
+    files: [],
+    components: [buildStockNavRow(safePage), ...buildStockPurchaseRows(pageItems)]
+  };
 }
 
 client.on('interactionCreate', async (interaction) => {
